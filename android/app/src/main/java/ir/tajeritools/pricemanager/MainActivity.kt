@@ -265,11 +265,13 @@ fun FormulaScreen(
     var preview by remember { mutableStateOf("") }
     var buyDiscount by remember { mutableStateOf("18") }
     var markup by remember { mutableStateOf("10") }
+    var giftBuyQty by remember { mutableStateOf("0") }
+    var giftFreeQty by remember { mutableStateOf("0") }
     var targetMargin by remember { mutableStateOf("10") }
 
     Column(Modifier.fillMaxSize().padding(12.dp)) {
         Text("فرمول‌ها مرحله‌به‌مرحله اجرا می‌شوند و خروجی آخر = قیمت نهایی")
-        Text("مثال: قیمت-18%=جواب بعد +10%=جواب نهایی")
+        Text("مثال: price-18%=gift(10,1)=price+10%")
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(brand, { brand = it }, label = { Text("برند") }, modifier = Modifier.fillMaxWidth())
         Spacer(Modifier.height(8.dp))
@@ -289,7 +291,7 @@ fun FormulaScreen(
 
         Spacer(Modifier.height(12.dp))
         Text("سازنده فرمول فروشگاهی", style = MaterialTheme.typography.titleMedium)
-        Text("قیمت لیست → تخفیف همکاری → سود فروش", style = MaterialTheme.typography.bodySmall)
+        Text("قیمت لیست → تخفیف همکاری → اشانتیون → سود فروش", style = MaterialTheme.typography.bodySmall)
         Spacer(Modifier.height(6.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             OutlinedTextField(
@@ -306,16 +308,36 @@ fun FormulaScreen(
             )
         }
         Spacer(Modifier.height(6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            OutlinedTextField(
+                value = giftBuyQty,
+                onValueChange = { giftBuyQty = it.filter(Char::isDigit) },
+                label = { Text("خرید X عدد") },
+                modifier = Modifier.weight(1f)
+            )
+            OutlinedTextField(
+                value = giftFreeQty,
+                onValueChange = { giftFreeQty = it.filter(Char::isDigit) },
+                label = { Text("اشانتیون Y عدد") },
+                modifier = Modifier.weight(1f)
+            )
+        }
+        Text("اگر اشانتیون ندارد هر دو را صفر بگذار.", style = MaterialTheme.typography.bodySmall)
+        Spacer(Modifier.height(6.dp))
         Button(
             onClick = {
-                val d = buyDiscount.toDoubleOrNull()
-                val m = markup.toDoubleOrNull()
-                if (d != null && m != null) {
-                    formula = "price-${trimNumber(d)}%=price+${trimNumber(m)}%"
-                }
+                val d = buyDiscount.toDoubleOrNull() ?: 0.0
+                val m = markup.toDoubleOrNull() ?: 0.0
+                val x = giftBuyQty.toIntOrNull() ?: 0
+                val y = giftFreeQty.toIntOrNull() ?: 0
+                val parts = mutableListOf<String>()
+                if (d > 0.0) parts += "price-${trimNumber(d)}%"
+                if (x > 0 && y > 0) parts += "gift($x,$y)"
+                if (m > 0.0) parts += "price+${trimNumber(m)}%"
+                formula = parts.joinToString("=")
             },
             modifier = Modifier.fillMaxWidth()
-        ) { Text("ساخت فرمول تخفیف + سود") }
+        ) { Text("ساخت فرمول کامل") }
 
         Spacer(Modifier.height(12.dp))
         Text("حاشیه سود هدف", style = MaterialTheme.typography.titleMedium)
@@ -412,7 +434,7 @@ fun PdfScreen(docs: List<DocItem>, formulas: Map<String, String>) {
         Button(
             modifier = Modifier.fillMaxWidth(),
             onClick = {
-                val finalRows = rows.map {
+                val finalRows = rows.filter { isMeaningfulProductName(it.name) }.map {
                     val final = formulaForBrand(formulas, brand)?.let { f ->
                         runCatching { applyFormula(it.rawPrice, f) }.getOrDefault(it.rawPrice)
                     } ?: it.rawPrice
@@ -551,35 +573,89 @@ fun extractImageText(file: File): String {
     }
 }
 
+fun isMeaningfulProductName(value: String): Boolean {
+    val s = normalize(value)
+        .replace(Regex("""(?:13|14|20)\d{2}[/.-]\d{1,2}[/.-]\d{1,2}"""), " ")
+        .replace(Regex("""https?://\S+|www\.\S+|\S+\.com\S*"""), " ")
+        .replace(Regex("""\b\d{5,}\b"""), " ")
+        .replace(Regex("""\s+"""), " ")
+        .trim()
+    val letters = s.count { it.isLetter() }
+    if (letters < 2) return false
+    val banned = listOf("لیست قیمت", "tajeritools", "arvatools", "قیمت نهایی", "تومان")
+    return banned.none { s == normalize(it) }
+}
+
+fun cleanProductName(line: String, priceToken: String): String {
+    return line
+        .replace(priceToken, " ")
+        .replace(Regex("""(?:13|14|20)\d{2}[/.-]\d{1,2}[/.-]\d{1,2}"""), " ")
+        .replace(Regex("""(?:قیمت\s*نهایی|قیمت|تومان|ریال)[:：]?"""), " ")
+        .replace(Regex("""https?://\S+|www\.\S+|\S+\.com\S*"""), " ")
+        .replace(Regex("""\b\d{1,3}\b"""), " ")
+        .replace(Regex("""\s+"""), " ")
+        .trim(' ', '-', ':', '،', '|')
+}
+
 fun extractProducts(doc: DocItem): List<ProductLine> {
-    parseAiProducts(doc)?.takeIf { it.isNotEmpty() }?.let { return it }
+    parseAiProducts(doc)?.filter { isMeaningfulProductName(it.name) }?.takeIf { it.isNotEmpty() }?.let { return it }
+
+    val lines = doc.text.lines().map { it.replace(Regex("""\s+"""), " ").trim() }
     val out = mutableListOf<ProductLine>()
-    val numberRegex = Regex("""(?<!\\w)([0-9۰-۹][0-9۰-۹٬,./]{2,})(?!\\w)""")
-    val dateRegex = Regex("""^(?:13|14|20)\\d{2}[/.-]\\d{1,2}[/.-]\\d{1,2}$""")
-    val codeRegex = Regex("""\\b(?:[A-Za-z]{1,10}[-_ ]?\\d{1,10}[A-Za-z0-9-]*|\\d{3,6}[A-Za-z]?)\\b""")
-    for (raw in doc.text.lines()) {
-        val line = raw.replace(Regex("\\s+"), " ").trim()
+    val numberRegex = Regex("""(?<!\w)([0-9۰-۹][0-9۰-۹٬,./]{2,})(?!\w)""")
+    val dateRegex = Regex("""^(?:13|14|20)\d{2}[/.-]\d{1,2}[/.-]\d{1,2}$""")
+    val codeRegex = Regex("""\b(?:[A-Za-z]{1,10}[-_ ]?\d{1,10}[A-Za-z0-9-]*|\d{4,6}[A-Za-z]?)\b""")
+
+    for (index in lines.indices) {
+        val line = lines[index]
         if (line.length < 4) continue
+
         val candidates = numberRegex.findAll(line).mapNotNull { m ->
             val token = normalize(m.value)
             if (dateRegex.matches(token)) return@mapNotNull null
             val value = parseNumber(token) ?: return@mapNotNull null
-            val digits = token.count { it.isDigit() }
-            if (value < 50_000 || digits < 5) return@mapNotNull null
+            val digits = token.count(Char::isDigit)
+            if (value < 100_000 || digits < 6) return@mapNotNull null
             var score = 0
-            if (token.contains(",") || token.contains("٬")) score += 4
-            if (digits >= 6) score += 3
+            if (token.contains(",") || token.contains("٬") || token.contains("/")) score += 3
+            if (digits >= 7) score += 3
             if (Regex("""(?:قیمت|تومان|ریال|price)""", RegexOption.IGNORE_CASE).containsMatchIn(line)) score += 5
             Triple(m, value, score)
         }.toList()
-        val picked = candidates.maxWithOrNull(compareBy<Triple<MatchResult, Double, Int>> { it.third }.thenBy { it.first.value.length }) ?: continue
+
+        val picked = candidates.maxWithOrNull(
+            compareBy<Triple<MatchResult, Double, Int>> { it.third }.thenBy { it.first.value.length }
+        ) ?: continue
+
         val priceMatch = picked.first
         val price = picked.second
-        val code = codeRegex.findAll(line).map { it.value.replace(" ", "") }.firstOrNull { parseNumber(it)?.let { n -> n != price } ?: true }
-        val name = line.removeRange(priceMatch.range).replace(Regex("""(?:قیمت|تومان|ریال)[:：]?"""), " ").trim(' ', '-', ':', '،').ifBlank { code ?: "محصول" }
-        out += ProductLine(doc.brand, name.take(180), code, price, line)
+        var name = cleanProductName(line, priceMatch.value)
+
+        // PDF tables sometimes separate the description from its price column.
+        // Only borrow an adjacent line when the current row has no usable product name.
+        if (!isMeaningfulProductName(name)) {
+            val adjacent = listOfNotNull(
+                lines.getOrNull(index - 1),
+                lines.getOrNull(index + 1)
+            ).map { cleanProductName(it, "") }
+             .firstOrNull { isMeaningfulProductName(it) }
+            if (adjacent != null) name = adjacent
+        }
+
+        // A wrong name is worse than omitting the row from the customer-facing price list.
+        if (!isMeaningfulProductName(name)) continue
+
+        val code = codeRegex.findAll("$name $line")
+            .map { it.value.replace(" ", "") }
+            .firstOrNull { candidate ->
+                val n = parseNumber(candidate)
+                n == null || n < 100_000
+            }
+
+        out += ProductLine(doc.brand, name.take(160), code, price, line)
     }
-    return out.distinctBy { "${it.brand}|${it.code}|${it.name}|${it.rawPrice}" }
+
+    return out.distinctBy { "${it.brand}|${it.code}|${normalize(it.name)}|${it.rawPrice}" }
 }
 
 fun detectBrand(value: String): String {
@@ -630,8 +706,7 @@ Return ONLY valid JSON with this exact shape:
 
 Rules:
 - Detect brand from the filename and document text.
-- Extract only real product rows that contain a price in the supplied document.
-- Never invent a price, product, model, or brand.
+- Extract only real product rows that contain a price in the supplied document.\n- Every returned product MUST include a specific product name; include its model/code whenever visible.\n- Never return a row whose only description is a date, quantity, page number, or generic placeholder.\n- Never invent a price, product, model, or brand.
 - Preserve the numeric price semantically; remove thousands separators only.
 - If uncertain about a row, omit it.
 - Common brands include Ronix, Tosan, Anchor, Nova, Arva, Pukka, Vivarex.
@@ -680,8 +755,7 @@ Return ONLY valid JSON:
 {"brand":"brand name","products":[{"name":"product name","code":"model/code or empty","price":123456}]}
 Rules:
 - Read the PDF itself, including scanned pages and tables.
-- Extract only actual product sale-price rows.
-- Never treat model codes, dates, page numbers, phone numbers, percentages or quantities as prices.
+- Extract only actual product sale-price rows.\n- Every returned row MUST contain the specific product name and model/code when visible in the table.\n- If the name/model cannot be tied confidently to the price, omit that row.\n- Never treat model codes, dates, page numbers, phone numbers, percentages or quantities as prices.
 - Never invent data.
 - Preserve the actual document price; remove separators only.
 - Omit uncertain rows.
@@ -725,11 +799,26 @@ fun formulaForBrand(formulas: Map<String, String>, brand: String): String? {
 
 fun applyFormulaSteps(input: Double, formula: String): List<Pair<String, Double>> {
     var value = input
-    val normalized = normalize(formula).replace('×', '*').replace('÷', '/').replace('−', '-')
-    val ops = Regex("""([+\\-*/])\\s*([0-9]+(?:\\.[0-9]+)?)\\s*(%)?""").findAll(normalized).toList()
-    require(ops.isNotEmpty()) { "هیچ عملیات قابل محاسبه‌ای در فرمول پیدا نشد" }
+    val tokens = formula.split("=")
+        .map { normalize(it).replace('×', '*').replace('÷', '/').replace('−', '-').replace(" ", "") }
+        .filter { it.isNotBlank() }
+
     return buildList {
-        for (m in ops) {
+        for (token0 in tokens) {
+            val token = token0.replace("قیمت", "price")
+            val gift = Regex("""gift\((\d+),(\d+)\)""").matchEntire(token)
+            if (gift != null) {
+                val buyQty = gift.groupValues[1].toInt()
+                val freeQty = gift.groupValues[2].toInt()
+                require(buyQty > 0 && freeQty > 0) { "تعداد اشانتیون نامعتبر است" }
+                value = value * buyQty.toDouble() / (buyQty + freeQty).toDouble()
+                add(("اشانتیون $buyQty+$freeQty") to value)
+                continue
+            }
+
+            var opText = token
+            if (opText.startsWith("price")) opText = opText.removePrefix("price")
+            val m = Regex("""^([+\-*/])([0-9]+(?:\.[0-9]+)?)(%)?$""").matchEntire(opText) ?: continue
             val op = m.groupValues[1]
             val num = m.groupValues[2].toDouble()
             val pct = m.groupValues[3] == "%"
@@ -738,14 +827,18 @@ fun applyFormulaSteps(input: Double, formula: String): List<Pair<String, Double>
                 "+" -> if (pct) before + before * num / 100.0 else before + num
                 "-" -> if (pct) before - before * num / 100.0 else before - num
                 "*" -> if (pct) before * (num / 100.0) else before * num
-                "/" -> { val d = if (pct) num / 100.0 else num; require(d != 0.0) { "تقسیم بر صفر" }; before / d }
+                "/" -> {
+                    val d = if (pct) num / 100.0 else num
+                    require(d != 0.0) { "تقسیم بر صفر" }
+                    before / d
+                }
                 else -> before
             }
             add(("$op${trimNumber(num)}${if (pct) "%" else ""}") to value)
         }
+        require(isNotEmpty()) { "هیچ عملیات قابل محاسبه‌ای در فرمول پیدا نشد" }
     }
 }
-
 fun applyFormula(input: Double, formula: String): Double = applyFormulaSteps(input, formula).last().second
 
 fun formatFormulaTrace(input: Double, steps: List<Pair<String, Double>>): String = buildString {
@@ -791,11 +884,15 @@ fun makePricePdf(
             canvas.drawText("لیست قیمت $brand - TajeriTools", pageWidth - margin, 42f, titlePaint)
             y = 70f
         }
-        val code = product.code?.takeIf { !normalize(product.name).contains(normalize(it)) }?.let { " $it" } ?: ""
-        val line = "${product.name}$code   قیمت نهایی: ${formatPrice(finalPrice)} تومان"
-        val shown = if (line.length > 85) line.take(82) + "…" else line
-        canvas.drawText(shown, pageWidth - margin, y, paint)
-        y += 24f
+        val title = "دستگاه: ${product.name}"
+        val model = product.code?.let { "مدل/کد: $it" }
+        val priceLine = "قیمت نهایی: ${formatPrice(finalPrice)} تومان"
+        listOfNotNull(title, model, priceLine).forEach { line ->
+            val shown = if (line.length > 78) line.take(75) + "…" else line
+            canvas.drawText(shown, pageWidth - margin, y, paint)
+            y += 20f
+        }
+        y += 8f
     }
     pdf.finishPage(page)
 
