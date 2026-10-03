@@ -263,6 +263,9 @@ fun FormulaScreen(
     var formula by remember { mutableStateOf("") }
     var test by remember { mutableStateOf("10000000") }
     var preview by remember { mutableStateOf("") }
+    var buyDiscount by remember { mutableStateOf("18") }
+    var markup by remember { mutableStateOf("10") }
+    var targetMargin by remember { mutableStateOf("10") }
 
     Column(Modifier.fillMaxSize().padding(12.dp)) {
         Text("فرمول‌ها مرحله‌به‌مرحله اجرا می‌شوند و خروجی آخر = قیمت نهایی")
@@ -270,6 +273,70 @@ fun FormulaScreen(
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(brand, { brand = it }, label = { Text("برند") }, modifier = Modifier.fillMaxWidth())
         Spacer(Modifier.height(8.dp))
+
+        Text("فرمول‌های آماده", style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(
+                onClick = { formula = "price-18%=price+10%" },
+                modifier = Modifier.weight(1f)
+            ) { Text("قبلی: -18% +10%") }
+            OutlinedButton(
+                onClick = { formula = "price+10%" },
+                modifier = Modifier.weight(1f)
+            ) { Text("فقط +10%") }
+        }
+
+        Spacer(Modifier.height(12.dp))
+        Text("سازنده فرمول فروشگاهی", style = MaterialTheme.typography.titleMedium)
+        Text("قیمت لیست → تخفیف همکاری → سود فروش", style = MaterialTheme.typography.bodySmall)
+        Spacer(Modifier.height(6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            OutlinedTextField(
+                value = buyDiscount,
+                onValueChange = { buyDiscount = it.filter { ch -> ch.isDigit() || ch == '.' } },
+                label = { Text("تخفیف خرید %") },
+                modifier = Modifier.weight(1f)
+            )
+            OutlinedTextField(
+                value = markup,
+                onValueChange = { markup = it.filter { ch -> ch.isDigit() || ch == '.' } },
+                label = { Text("سود روی خرید %") },
+                modifier = Modifier.weight(1f)
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Button(
+            onClick = {
+                val d = buyDiscount.toDoubleOrNull()
+                val m = markup.toDoubleOrNull()
+                if (d != null && m != null) {
+                    formula = "price-${trimNumber(d)}%=price+${trimNumber(m)}%"
+                }
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) { Text("ساخت فرمول تخفیف + سود") }
+
+        Spacer(Modifier.height(12.dp))
+        Text("حاشیه سود هدف", style = MaterialTheme.typography.titleMedium)
+        Text("مثلاً حاشیه سود واقعی 10٪ با +10٪ یکی نیست.", style = MaterialTheme.typography.bodySmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = targetMargin,
+                onValueChange = { targetMargin = it.filter { ch -> ch.isDigit() || ch == '.' } },
+                label = { Text("حاشیه سود %") },
+                modifier = Modifier.weight(1f)
+            )
+            Button(onClick = {
+                val margin = targetMargin.toDoubleOrNull()
+                if (margin != null && margin > 0.0 && margin < 100.0) {
+                    val divisor = 1.0 - margin / 100.0
+                    formula = "price/${"%.6f".format(Locale.US, divisor).trimEnd('0').trimEnd('.')}"
+                }
+            }) { Text("ساخت") }
+        }
+
+        Spacer(Modifier.height(12.dp))
         OutlinedTextField(formula, { formula = it }, label = { Text("فرمول") }, modifier = Modifier.fillMaxWidth())
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(test, { test = it.filter { ch -> ch.isDigit() || ch == '.' || ch == '/' || ch == ',' || ch == '٬' } }, label = { Text("قیمت آزمایشی") }, modifier = Modifier.fillMaxWidth())
