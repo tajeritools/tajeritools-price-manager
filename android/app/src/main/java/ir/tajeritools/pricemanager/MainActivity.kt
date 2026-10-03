@@ -2,12 +2,16 @@ package ir.tajeritools.pricemanager
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Paint
 import android.graphics.pdf.PdfDocument
+import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.Bundle
+import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
+import android.util.Base64
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -190,11 +194,12 @@ fun SearchScreen(docs: List<DocItem>, formulas: Map<String, String>) {
                     Column(Modifier.padding(12.dp)) {
                         Text(p.name, style = MaterialTheme.typography.titleMedium)
                         Text("برند: ${p.brand}")
-                        if (!p.code.isNullOrBlank()) Text("کد: ${p.code}")
-                        Text("قیمت فایل: ${formatPrice(p.rawPrice)}")
-                        formulas[p.brand]?.let { f ->
-                            runCatching { applyFormula(p.rawPrice, f) }.getOrNull()?.let {
-                                Text("قیمت نهایی: ${formatPrice(it)} تومان")
+                        if (!p.code.isNullOrBlank()) Text("مدل/کد: ${p.code}")
+                        Text("قیمت فایل: ${formatPrice(p.rawPrice)} تومان")
+                        formulaForBrand(formulas, p.brand)?.let { f ->
+                            runCatching { applyFormulaSteps(p.rawPrice, f) }.getOrNull()?.let { steps ->
+                                Text("قیمت نهایی: ${formatPrice(steps.last().second)} تومان")
+                                Text(formatFormulaTrace(p.rawPrice, steps), style = MaterialTheme.typography.bodySmall)
                             }
                         }
                         Text(p.source.take(260), style = MaterialTheme.typography.bodySmall)
@@ -261,18 +266,20 @@ fun FormulaScreen(
 
     Column(Modifier.fillMaxSize().padding(12.dp)) {
         Text("فرمول‌ها مرحله‌به‌مرحله اجرا می‌شوند و خروجی آخر = قیمت نهایی")
-        Text("مثال Anchor: price-7%=price*7=price/8=price+10%")
+        Text("مثال: قیمت-18%=جواب بعد +10%=جواب نهایی")
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(brand, { brand = it }, label = { Text("برند") }, modifier = Modifier.fillMaxWidth())
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(formula, { formula = it }, label = { Text("فرمول") }, modifier = Modifier.fillMaxWidth())
         Spacer(Modifier.height(8.dp))
-        OutlinedTextField(test, { test = it.filter { ch -> ch.isDigit() || ch == '.' } }, label = { Text("قیمت آزمایشی") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(test, { test = it.filter { ch -> ch.isDigit() || ch == '.' || ch == '/' || ch == ',' || ch == '٬' } }, label = { Text("قیمت آزمایشی") }, modifier = Modifier.fillMaxWidth())
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = {
                 preview = runCatching {
-                    "قیمت نهایی: " + formatPrice(applyFormula(test.toDouble(), formula)) + " تومان"
+                    val base = parseNumber(test) ?: error("قیمت نامعتبر")
+                    val steps = applyFormulaSteps(base, formula)
+                    formatFormulaTrace(base, steps) + "\nقیمت نهایی: " + formatPrice(steps.last().second) + " تومان"
                 }.getOrElse { "فرمول نامعتبر" }
             }) { Text("آزمایش") }
             Button(onClick = {
@@ -333,13 +340,13 @@ fun PdfScreen(docs: List<DocItem>, formulas: Map<String, String>) {
         Spacer(Modifier.height(8.dp))
         val rows = products.filter { it.brand == brand }
         Text("${rows.size} ردیف قیمت پیدا شد.")
-        Text("فرمول: ${formulas[brand] ?: "بدون فرمول"}")
+        Text("فرمول: ${formulaForBrand(formulas, brand) ?: "بدون فرمول"}")
         Spacer(Modifier.height(8.dp))
         Button(
             modifier = Modifier.fillMaxWidth(),
             onClick = {
                 val finalRows = rows.map {
-                    val final = formulas[brand]?.let { f ->
+                    val final = formulaForBrand(formulas, brand)?.let { f ->
                         runCatching { applyFormula(it.rawPrice, f) }.getOrDefault(it.rawPrice)
                     } ?: it.rawPrice
                     it to final
@@ -358,8 +365,18 @@ fun PdfScreen(docs: List<DocItem>, formulas: Map<String, String>) {
         Spacer(Modifier.height(8.dp))
         LazyColumn {
             items(rows.take(50)) { p ->
-                val final = formulas[brand]?.let { f -> runCatching { applyFormula(p.rawPrice, f) }.getOrDefault(p.rawPrice) } ?: p.rawPrice
-                Text("${p.name} ${p.code.orEmpty()} — قیمت نهایی: ${formatPrice(final)} تومان", Modifier.padding(vertical = 5.dp))
+                val f = formulaForBrand(formulas, brand)
+                val steps = f?.let { runCatching { applyFormulaSteps(p.rawPrice, it) }.getOrNull() }
+                val final = steps?.lastOrNull()?.second ?: p.rawPrice
+                Column(Modifier.padding(vertical = 7.dp)) {
+                    Text("دستگاه: ${p.name}")
+                    if (!p.code.isNullOrBlank()) Text("مدل/کد: ${p.code}")
+                    Text("قیمت فایل: ${formatPrice(p.rawPrice)} تومان")
+                    if (steps != null) {
+                        Text("محاسبه: ${formatFormulaTrace(p.rawPrice, steps)}")
+                        Text("قیمت نهایی: ${formatPrice(final)} تومان")
+                    }
+                }
             }
         }
     }
@@ -374,16 +391,21 @@ suspend fun importDocument(context: Context, uri: Uri, brandOverride: String, ap
         FileOutputStream(outFile).use { output -> input.copyTo(output) }
     }
 
+    val isPdf = mime == "application/pdf" || name.endsWith(".pdf", true)
     val text = when {
-        mime == "application/pdf" || name.endsWith(".pdf", true) -> runCatching { extractPdfText(outFile) }.getOrDefault("")
+        isPdf -> runCatching { extractPdfTextSmart(outFile) }.getOrDefault("")
         mime.startsWith("image/") -> runCatching { extractImageText(outFile) }.getOrDefault("")
         name.endsWith(".csv", true) || mime.contains("csv") || mime.startsWith("text/") -> runCatching { outFile.readText() }.getOrDefault("")
         else -> runCatching { outFile.readText() }.getOrDefault("")
     }
 
     val localBrand = brandOverride.ifBlank { detectBrand("$name\n$text") }
-    val aiJson = if (apiKey.isNotBlank() && text.isNotBlank()) {
-        runCatching { analyzeWithGemini(apiKey, name, text) }.getOrDefault("")
+    val aiJson = if (apiKey.isNotBlank()) {
+        when {
+            isPdf && outFile.length() <= 18L * 1024L * 1024L -> runCatching { analyzePdfWithGemini(apiKey, name, outFile) }.getOrDefault("")
+            text.isNotBlank() -> runCatching { analyzeWithGemini(apiKey, name, text) }.getOrDefault("")
+            else -> ""
+        }
     } else ""
     val aiBrand = parseAiBrand(aiJson)
     val finalBrand = brandOverride.ifBlank { aiBrand.ifBlank { localBrand } }.ifBlank { "نامشخص" }
@@ -413,6 +435,44 @@ fun extractPdfText(file: File): String {
     }
 }
 
+fun extractPdfTextSmart(file: File): String {
+    val embedded = runCatching { extractPdfText(file) }.getOrDefault("")
+    val useful = embedded.count { it.isLetterOrDigit() }
+    if (useful >= 250) return embedded
+    val ocr = runCatching { extractScannedPdfText(file) }.getOrDefault("")
+    return listOf(embedded, ocr).filter { it.isNotBlank() }.joinToString("\n")
+}
+
+fun extractScannedPdfText(file: File): String {
+    val pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+    val renderer = PdfRenderer(pfd)
+    val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+    return try {
+        buildString {
+            val pages = minOf(renderer.pageCount, 80)
+            for (index in 0 until pages) {
+                renderer.openPage(index).use { page ->
+                    val width = 1800
+                    val scale = width.toFloat() / page.width.toFloat()
+                    val height = (page.height * scale).toInt().coerceAtLeast(1)
+                    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                    page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                    val result = Tasks.await(recognizer.process(InputImage.fromBitmap(bitmap, 0)))
+                    if (result.text.isNotBlank()) {
+                        append("\n--- PAGE ${index + 1} OCR ---\n")
+                        append(result.text)
+                    }
+                    bitmap.recycle()
+                }
+            }
+        }
+    } finally {
+        recognizer.close()
+        renderer.close()
+        pfd.close()
+    }
+}
+
 fun extractImageText(file: File): String {
     val bitmap = BitmapFactory.decodeFile(file.absolutePath) ?: return ""
     val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
@@ -427,18 +487,29 @@ fun extractImageText(file: File): String {
 fun extractProducts(doc: DocItem): List<ProductLine> {
     parseAiProducts(doc)?.takeIf { it.isNotEmpty() }?.let { return it }
     val out = mutableListOf<ProductLine>()
-    val priceRegex = Regex("""(?<!\w)([0-9۰-۹][0-9۰-۹٬,/.]{2,})(?!\w)""")
-    val codeRegex = Regex("""\b(?:[A-Za-z]{1,8}[-_ ]?\d{1,8}[A-Za-z0-9-]*|\d{3,6}[A-Za-z]?)\b""")
+    val numberRegex = Regex("""(?<!\\w)([0-9۰-۹][0-9۰-۹٬,./]{2,})(?!\\w)""")
+    val dateRegex = Regex("""^(?:13|14|20)\\d{2}[/.-]\\d{1,2}[/.-]\\d{1,2}$""")
+    val codeRegex = Regex("""\\b(?:[A-Za-z]{1,10}[-_ ]?\\d{1,10}[A-Za-z0-9-]*|\\d{3,6}[A-Za-z]?)\\b""")
     for (raw in doc.text.lines()) {
         val line = raw.replace(Regex("\\s+"), " ").trim()
         if (line.length < 4) continue
-        val matches = priceRegex.findAll(line).toList()
-        if (matches.isEmpty()) continue
-        val priceMatch = matches.maxByOrNull { it.value.length } ?: continue
-        val price = parseNumber(priceMatch.value) ?: continue
-        if (price < 1000) continue
-        val code = codeRegex.find(line)?.value?.replace(" ", "")
-        val name = (line.removeRange(priceMatch.range)).trim(' ', '-', ':', '،').ifBlank { line }
+        val candidates = numberRegex.findAll(line).mapNotNull { m ->
+            val token = normalize(m.value)
+            if (dateRegex.matches(token)) return@mapNotNull null
+            val value = parseNumber(token) ?: return@mapNotNull null
+            val digits = token.count { it.isDigit() }
+            if (value < 50_000 || digits < 5) return@mapNotNull null
+            var score = 0
+            if (token.contains(",") || token.contains("٬")) score += 4
+            if (digits >= 6) score += 3
+            if (Regex("""(?:قیمت|تومان|ریال|price)""", RegexOption.IGNORE_CASE).containsMatchIn(line)) score += 5
+            Triple(m, value, score)
+        }.toList()
+        val picked = candidates.maxWithOrNull(compareBy<Triple<MatchResult, Double, Int>> { it.third }.thenBy { it.first.value.length }) ?: continue
+        val priceMatch = picked.first
+        val price = picked.second
+        val code = codeRegex.findAll(line).map { it.value.replace(" ", "") }.firstOrNull { parseNumber(it)?.let { n -> n != price } ?: true }
+        val name = line.removeRange(priceMatch.range).replace(Regex("""(?:قیمت|تومان|ریال)[:：]?"""), " ").trim(' ', '-', ':', '،').ifBlank { code ?: "محصول" }
         out += ProductLine(doc.brand, name.take(180), code, price, line)
     }
     return out.distinctBy { "${it.brand}|${it.code}|${it.name}|${it.rawPrice}" }
@@ -475,7 +546,7 @@ fun parseAiProducts(doc: DocItem): List<ProductLine>? {
                 val name = p.optString("name").trim()
                 val code = p.optString("code").trim().ifBlank { null }
                 val price = p.optDouble("price", Double.NaN)
-                if (name.isNotBlank() && price.isFinite() && price >= 1000) {
+                if (name.isNotBlank() && price.isFinite() && price >= 50_000) {
                     add(ProductLine(brand, name, code, price, "AI: ${doc.name}"))
                 }
             }
@@ -535,6 +606,38 @@ $clipped
         .trim()
 }
 
+fun analyzePdfWithGemini(apiKey: String, fileName: String, file: File): String {
+    val prompt = """
+You analyze Iranian tool-store price-list PDFs.
+Return ONLY valid JSON:
+{"brand":"brand name","products":[{"name":"product name","code":"model/code or empty","price":123456}]}
+Rules:
+- Read the PDF itself, including scanned pages and tables.
+- Extract only actual product sale-price rows.
+- Never treat model codes, dates, page numbers, phone numbers, percentages or quantities as prices.
+- Never invent data.
+- Preserve the actual document price; remove separators only.
+- Omit uncertain rows.
+Filename: $fileName
+""".trimIndent()
+    val encoded = Base64.encodeToString(file.readBytes(), Base64.NO_WRAP)
+    val parts = JSONArray().put(JSONObject().put("text", prompt)).put(JSONObject().put("inlineData", JSONObject().put("mimeType", "application/pdf").put("data", encoded)))
+    val request = JSONObject().apply {
+        put("contents", JSONArray().put(JSONObject().put("parts", parts)))
+        put("generationConfig", JSONObject().put("responseMimeType", "application/json").put("temperature", 0.0))
+    }
+    val connection = (URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent").openConnection() as HttpURLConnection).apply {
+        requestMethod = "POST"; connectTimeout = 30000; readTimeout = 120000; doOutput = true
+        setRequestProperty("Content-Type", "application/json")
+        setRequestProperty("x-goog-api-key", apiKey)
+    }
+    connection.outputStream.use { it.write(request.toString().toByteArray(Charsets.UTF_8)) }
+    val httpCode = connection.responseCode
+    val stream = if (httpCode in 200..299) connection.inputStream else connection.errorStream
+    val body = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+    require(httpCode in 200..299) { "Gemini HTTP $httpCode: ${body.take(300)}" }
+    return JSONObject(body).getJSONArray("candidates").getJSONObject(0).getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text").trim()
+}
 fun normalize(value: String): String {
     val fa = "۰۱۲۳۴۵۶۷۸۹"
     var s = value.lowercase(Locale.ROOT).replace('ي', 'ی').replace('ك', 'ک')
@@ -547,33 +650,43 @@ fun parseNumber(value: String): Double? {
     return Regex("\\d+(?:\\.\\d+)?").find(n)?.value?.toDoubleOrNull()
 }
 
-fun applyFormula(input: Double, formula: String): Double {
+fun formulaForBrand(formulas: Map<String, String>, brand: String): String? {
+    formulas[brand]?.let { return it }
+    val canonical = detectBrand(brand)
+    return formulas.entries.firstOrNull { (k, _) -> normalize(k) == normalize(brand) || (canonical.isNotBlank() && detectBrand(k) == canonical) }?.value
+}
+
+fun applyFormulaSteps(input: Double, formula: String): List<Pair<String, Double>> {
     var value = input
-    val steps = formula.split("=").map { it.trim() }.filter { it.isNotBlank() }
-    for (raw in steps) {
-        var step = normalize(raw).replace("قیمت", "price").replace(" ", "")
-        if (step.startsWith("price")) step = step.removePrefix("price")
-        if (step.isBlank()) continue
-        val m = Regex("""^([+\-*/])([0-9.]+)(%)?$""").matchEntire(step)
-            ?: error("مرحله نامعتبر: $raw")
-        val op = m.groupValues[1]
-        val num = m.groupValues[2].toDouble()
-        val pct = m.groupValues[3] == "%"
-        val amount = if (pct) value * num / 100.0 else num
-        value = when (op) {
-            "+" -> value + amount
-            "-" -> value - amount
-            "*" -> if (pct) value * (num / 100.0) else value * num
-            "/" -> {
-                val d = if (pct) num / 100.0 else num
-                require(d != 0.0) { "تقسیم بر صفر" }
-                value / d
+    val normalized = normalize(formula).replace('×', '*').replace('÷', '/').replace('−', '-')
+    val ops = Regex("""([+\\-*/])\\s*([0-9]+(?:\\.[0-9]+)?)\\s*(%)?""").findAll(normalized).toList()
+    require(ops.isNotEmpty()) { "هیچ عملیات قابل محاسبه‌ای در فرمول پیدا نشد" }
+    return buildList {
+        for (m in ops) {
+            val op = m.groupValues[1]
+            val num = m.groupValues[2].toDouble()
+            val pct = m.groupValues[3] == "%"
+            val before = value
+            value = when (op) {
+                "+" -> if (pct) before + before * num / 100.0 else before + num
+                "-" -> if (pct) before - before * num / 100.0 else before - num
+                "*" -> if (pct) before * (num / 100.0) else before * num
+                "/" -> { val d = if (pct) num / 100.0 else num; require(d != 0.0) { "تقسیم بر صفر" }; before / d }
+                else -> before
             }
-            else -> value
+            add(("$op${trimNumber(num)}${if (pct) "%" else ""}") to value)
         }
     }
-    return value
 }
+
+fun applyFormula(input: Double, formula: String): Double = applyFormulaSteps(input, formula).last().second
+
+fun formatFormulaTrace(input: Double, steps: List<Pair<String, Double>>): String = buildString {
+    append(formatPrice(input))
+    for ((op, result) in steps) { append(" → "); append(op); append(" = "); append(formatPrice(result)) }
+}
+
+fun trimNumber(v: Double): String = if (v % 1.0 == 0.0) v.toLong().toString() else v.toString()
 
 fun formatPrice(v: Double): String = DecimalFormat("#,###").format(v.roundToLong()).replace(",", "٬")
 
