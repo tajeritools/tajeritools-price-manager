@@ -252,7 +252,8 @@ fun FormulaScreen(
     var preview by remember { mutableStateOf("") }
 
     Column(Modifier.fillMaxSize().padding(12.dp)) {
-        Text("فرمول‌ها مرحله‌به‌مرحله اجرا می‌شوند و خروجی آخر = قیمت نهایی")\n        Text("مثال Anchor: price-7%=price*7=price/8=price+10%")
+        Text("فرمول‌ها مرحله‌به‌مرحله اجرا می‌شوند و خروجی آخر = قیمت نهایی")
+        Text("مثال Anchor: price-7%=price*7=price/8=price+10%")
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(brand, { brand = it }, label = { Text("برند") }, modifier = Modifier.fillMaxWidth())
         Spacer(Modifier.height(8.dp))
