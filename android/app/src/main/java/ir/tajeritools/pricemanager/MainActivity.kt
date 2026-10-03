@@ -38,6 +38,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
 import java.text.DecimalFormat
 import java.util.Locale
 import kotlin.math.roundToLong
@@ -48,7 +50,8 @@ data class DocItem(
     val name: String,
     val path: String,
     val mime: String,
-    val text: String
+    val text: String,
+    val aiJson: String = ""
 )
 
 data class ProductLine(
@@ -77,6 +80,7 @@ fun App() {
     val scope = rememberCoroutineScope()
     var docs by remember { mutableStateOf(loadDocs(context)) }
     var formulas by remember { mutableStateOf(loadFormulas(context)) }
+    var apiKey by remember { mutableStateOf(loadAiKey(context)) }
     var tab by remember { mutableIntStateOf(0) }
     var busy by remember { mutableStateOf(false) }
     var pendingBrand by remember { mutableStateOf("") }
@@ -86,15 +90,11 @@ fun App() {
         ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
-        if (pendingBrand.isBlank()) {
-            message = "نام برند را وارد کنید."
-            return@rememberLauncherForActivityResult
-        }
         scope.launch {
             busy = true
             val added = mutableListOf<DocItem>()
             for (uri in uris) {
-                runCatching { importDocument(context, uri, pendingBrand.trim()) }
+                runCatching { importDocument(context, uri, pendingBrand.trim(), apiKey) }
                     .onSuccess { added += it }
                     .onFailure { message = "خطا در خواندن فایل: ${it.message}" }
             }
@@ -112,7 +112,7 @@ fun App() {
             modifier = Modifier.padding(16.dp)
         )
         TabRow(selectedTabIndex = tab) {
-            listOf("جستجو", "فایل‌ها", "فرمول", "PDF").forEachIndexed { i, t ->
+            listOf("جستجو", "فایل‌ها", "فرمول", "PDF", "AI").forEachIndexed { i, t ->
                 Tab(selected = tab == i, onClick = { tab = i }, text = { Text(t) })
             }
         }
@@ -152,6 +152,14 @@ fun App() {
                 message = "فرمول $brand ذخیره شد."
             }
             3 -> PdfScreen(docs, formulas)
+            4 -> AiScreen(
+                apiKey = apiKey,
+                onSave = {
+                    apiKey = it.trim()
+                    saveAiKey(context, apiKey)
+                    message = if (apiKey.isBlank()) "کلید AI پاک شد." else "کلید Gemini ذخیره شد."
+                }
+            )
         }
     }
 }
@@ -209,8 +217,8 @@ fun FilesScreen(
         OutlinedTextField(
             value = brand,
             onValueChange = onBrand,
-            label = { Text("نام برند") },
-            placeholder = { Text("مثلاً Anchor / آنکور") },
+            label = { Text("برند اختیاری") },
+            placeholder = { Text("خالی بگذارید تا برنامه خودش تشخیص دهد") },
             modifier = Modifier.fillMaxWidth()
         )
         Spacer(Modifier.height(8.dp))
@@ -280,6 +288,30 @@ fun FormulaScreen(
 }
 
 @Composable
+fun AiScreen(apiKey: String, onSave: (String) -> Unit) {
+    var key by remember(apiKey) { mutableStateOf(apiKey) }
+    Column(Modifier.fillMaxSize().padding(12.dp)) {
+        Text("هوش مصنوعی Gemini", style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.height(8.dp))
+        Text("اگر کلید Gemini API را وارد کنید، هنگام ورود فایل، AI برند و ردیف‌های محصول را از متن PDF تشخیص می‌دهد. قیمت حدس زده نمی‌شود و باید در خود فایل وجود داشته باشد.")
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = key,
+            onValueChange = { key = it },
+            label = { Text("Gemini API Key") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true
+        )
+        Spacer(Modifier.height(8.dp))
+        Button(onClick = { onSave(key) }, modifier = Modifier.fillMaxWidth()) {
+            Text("ذخیره تنظیمات AI")
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(if (key.isBlank()) "AI غیرفعال است؛ تشخیص محلی برند و استخراج معمولی انجام می‌شود." else "AI فعال است. مدل: gemini-3.5-flash")
+    }
+}
+
+@Composable
 fun PdfScreen(docs: List<DocItem>, formulas: Map<String, String>) {
     val context = LocalContext.current
     val products = remember(docs) { docs.flatMap(::extractProducts) }
@@ -333,7 +365,7 @@ fun PdfScreen(docs: List<DocItem>, formulas: Map<String, String>) {
     }
 }
 
-suspend fun importDocument(context: Context, uri: Uri, brand: String): DocItem = withContext(Dispatchers.IO) {
+suspend fun importDocument(context: Context, uri: Uri, brandOverride: String, apiKey: String): DocItem = withContext(Dispatchers.IO) {
     val name = queryName(context, uri) ?: "file_${System.currentTimeMillis()}"
     val mime = context.contentResolver.getType(uri) ?: "application/octet-stream"
     val dir = File(context.filesDir, "uploads").apply { mkdirs() }
@@ -343,19 +375,27 @@ suspend fun importDocument(context: Context, uri: Uri, brand: String): DocItem =
     }
 
     val text = when {
-        mime == "application/pdf" || name.endsWith(".pdf", true) -> extractPdfText(outFile)
-        mime.startsWith("image/") -> extractImageText(outFile)
-        name.endsWith(".csv", true) || mime.contains("csv") || mime.startsWith("text/") -> outFile.readText()
+        mime == "application/pdf" || name.endsWith(".pdf", true) -> runCatching { extractPdfText(outFile) }.getOrDefault("")
+        mime.startsWith("image/") -> runCatching { extractImageText(outFile) }.getOrDefault("")
+        name.endsWith(".csv", true) || mime.contains("csv") || mime.startsWith("text/") -> runCatching { outFile.readText() }.getOrDefault("")
         else -> runCatching { outFile.readText() }.getOrDefault("")
     }
 
+    val localBrand = brandOverride.ifBlank { detectBrand("$name\n$text") }
+    val aiJson = if (apiKey.isNotBlank() && text.isNotBlank()) {
+        runCatching { analyzeWithGemini(apiKey, name, text) }.getOrDefault("")
+    } else ""
+    val aiBrand = parseAiBrand(aiJson)
+    val finalBrand = brandOverride.ifBlank { aiBrand.ifBlank { localBrand } }.ifBlank { "نامشخص" }
+
     DocItem(
         id = "${System.currentTimeMillis()}-${name.hashCode()}",
-        brand = brand,
+        brand = finalBrand,
         name = name,
         path = outFile.absolutePath,
         mime = mime,
-        text = text
+        text = text,
+        aiJson = aiJson
     )
 }
 
@@ -385,6 +425,7 @@ fun extractImageText(file: File): String {
 }
 
 fun extractProducts(doc: DocItem): List<ProductLine> {
+    parseAiProducts(doc)?.takeIf { it.isNotEmpty() }?.let { return it }
     val out = mutableListOf<ProductLine>()
     val priceRegex = Regex("""(?<!\w)([0-9۰-۹][0-9۰-۹٬,/.]{2,})(?!\w)""")
     val codeRegex = Regex("""\b(?:[A-Za-z]{1,8}[-_ ]?\d{1,8}[A-Za-z0-9-]*|\d{3,6}[A-Za-z]?)\b""")
@@ -401,6 +442,97 @@ fun extractProducts(doc: DocItem): List<ProductLine> {
         out += ProductLine(doc.brand, name.take(180), code, price, line)
     }
     return out.distinctBy { "${it.brand}|${it.code}|${it.name}|${it.rawPrice}" }
+}
+
+fun detectBrand(value: String): String {
+    val s = normalize(value)
+    val brands = listOf(
+        "Ronix" to listOf("ronix", "رونیکس"),
+        "Tosan" to listOf("tosan", "توسن"),
+        "Anchor" to listOf("anchor", "آنکور", "انکر"),
+        "Nova" to listOf("nova", "نووا"),
+        "Arva" to listOf("arva", "آروا"),
+        "Pukka" to listOf("pukka", "پوکا"),
+        "Vivarex" to listOf("vivarex", "ویوارکس")
+    )
+    return brands.firstOrNull { (_, keys) -> keys.any { s.contains(normalize(it)) } }?.first.orEmpty()
+}
+
+fun parseAiBrand(aiJson: String): String {
+    if (aiJson.isBlank()) return ""
+    return runCatching { JSONObject(aiJson).optString("brand").trim() }.getOrDefault("")
+}
+
+fun parseAiProducts(doc: DocItem): List<ProductLine>? {
+    if (doc.aiJson.isBlank()) return null
+    return runCatching {
+        val root = JSONObject(doc.aiJson)
+        val brand = root.optString("brand").ifBlank { doc.brand }
+        val arr = root.optJSONArray("products") ?: JSONArray()
+        buildList {
+            for (i in 0 until arr.length()) {
+                val p = arr.optJSONObject(i) ?: continue
+                val name = p.optString("name").trim()
+                val code = p.optString("code").trim().ifBlank { null }
+                val price = p.optDouble("price", Double.NaN)
+                if (name.isNotBlank() && price.isFinite() && price >= 1000) {
+                    add(ProductLine(brand, name, code, price, "AI: ${doc.name}"))
+                }
+            }
+        }
+    }.getOrNull()
+}
+
+fun analyzeWithGemini(apiKey: String, fileName: String, text: String): String {
+    val clipped = text.take(50000)
+    val prompt = """
+You analyze Iranian tool-store price lists.
+Return ONLY valid JSON with this exact shape:
+{"brand":"brand name","products":[{"name":"product name","code":"model/code or empty","price":123456}]}
+
+Rules:
+- Detect brand from the filename and document text.
+- Extract only real product rows that contain a price in the supplied document.
+- Never invent a price, product, model, or brand.
+- Preserve the numeric price semantically; remove thousands separators only.
+- If uncertain about a row, omit it.
+- Common brands include Ronix, Tosan, Anchor, Nova, Arva, Pukka, Vivarex.
+Filename: $fileName
+Document text:
+$clipped
+""".trimIndent()
+
+    val request = JSONObject().apply {
+        put("contents", JSONArray().put(JSONObject().apply {
+            put("parts", JSONArray().put(JSONObject().put("text", prompt)))
+        }))
+        put("generationConfig", JSONObject().apply {
+            put("responseMimeType", "application/json")
+            put("temperature", 0.0)
+        })
+    }
+
+    val connection = (URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent").openConnection() as HttpURLConnection).apply {
+        requestMethod = "POST"
+        connectTimeout = 20000
+        readTimeout = 60000
+        doOutput = true
+        setRequestProperty("Content-Type", "application/json")
+        setRequestProperty("x-goog-api-key", apiKey)
+    }
+    connection.outputStream.use { it.write(request.toString().toByteArray(Charsets.UTF_8)) }
+    val httpCode = connection.responseCode
+    val stream = if (httpCode in 200..299) connection.inputStream else connection.errorStream
+    val body = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+    require(httpCode in 200..299) { "Gemini HTTP $httpCode: ${body.take(300)}" }
+    val root = JSONObject(body)
+    return root.getJSONArray("candidates")
+        .getJSONObject(0)
+        .getJSONObject("content")
+        .getJSONArray("parts")
+        .getJSONObject(0)
+        .getString("text")
+        .trim()
 }
 
 fun normalize(value: String): String {
@@ -514,6 +646,7 @@ fun saveDocs(context: Context, docs: List<DocItem>) {
             put("path", it.path)
             put("mime", it.mime)
             put("text", it.text)
+            put("aiJson", it.aiJson)
         })
     }
     context.getSharedPreferences("tajeri", Context.MODE_PRIVATE)
@@ -533,7 +666,8 @@ fun loadDocs(context: Context): List<DocItem> {
                 o.optString("name"),
                 p,
                 o.optString("mime"),
-                o.optString("text")
+                o.optString("text"),
+                o.optString("aiJson")
             )
         }
     }.getOrDefault(emptyList())
@@ -553,3 +687,13 @@ fun loadFormulas(context: Context): Map<String, String> {
         o.keys().asSequence().associateWith { o.getString(it) }
     }.getOrDefault(emptyMap())
 }
+
+
+fun saveAiKey(context: Context, key: String) {
+    context.getSharedPreferences("tajeri", Context.MODE_PRIVATE)
+        .edit().putString("gemini_api_key", key).apply()
+}
+
+fun loadAiKey(context: Context): String =
+    context.getSharedPreferences("tajeri", Context.MODE_PRIVATE)
+        .getString("gemini_api_key", "").orEmpty()
