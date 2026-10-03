@@ -16,6 +16,11 @@ android {
         versionName = "1.0.0"
     }
 
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
     buildFeatures { compose = true }
 
     packaging {
@@ -27,6 +32,10 @@ android {
             "META-INF/NOTICE.txt"
         )
     }
+}
+
+kotlin {
+    jvmToolchain(17)
 }
 
 dependencies {
