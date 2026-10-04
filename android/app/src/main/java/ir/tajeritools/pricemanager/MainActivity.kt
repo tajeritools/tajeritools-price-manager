@@ -536,7 +536,7 @@ suspend fun importDocument(context: Context, uri: Uri, brandOverride: String, ap
     val localBrand = brandOverride.ifBlank { detectBrand("$name\n$text") }
     val aiJson = if (apiKey.isNotBlank()) {
         when {
-            isPdf && outFile.length() <= 18L * 1024L * 1024L -> runCatching { analyzePdfWithGemini(apiKey, name, outFile) }.getOrDefault("")
+            isPdf -> runCatching { analyzePdfAnySizeWithGemini(apiKey, name, outFile) }.getOrDefault("")
             text.isNotBlank() -> runCatching { analyzeWithGemini(apiKey, name, text) }.getOrDefault("")
             else -> ""
         }
@@ -859,6 +859,49 @@ $clipped
         .getJSONObject(0)
         .getString("text")
         .trim()
+}
+
+fun analyzePdfAnySizeWithGemini(apiKey: String, fileName: String, file: File): String {
+    val inlineLimit = 18L * 1024L * 1024L
+    if (file.length() <= inlineLimit) return analyzePdfWithGemini(apiKey, fileName, file)
+
+    val merged = JSONObject().apply {
+        put("brand", "")
+        put("products", JSONArray())
+    }
+    val mergedProducts = merged.getJSONArray("products")
+    val tempDir = File(file.parentFile ?: file.parentFile, "ai_chunks").apply { mkdirs() }
+
+    PDDocument.load(file).use { source ->
+        var start = 0
+        while (start < source.numberOfPages) {
+            val end = minOf(start + 4, source.numberOfPages)
+            val chunkFile = File(tempDir, "chunk_${start}_${end}.pdf")
+            PDDocument().use { chunk ->
+                for (i in start until end) {
+                    chunk.importPage(source.getPage(i))
+                }
+                chunk.save(chunkFile)
+            }
+
+            val chunkJson = runCatching {
+                analyzePdfWithGemini(apiKey, "$fileName صفحات ${start + 1}-$end", chunkFile)
+            }.getOrDefault("")
+
+            if (chunkJson.isNotBlank()) {
+                runCatching {
+                    val o = JSONObject(chunkJson)
+                    if (merged.optString("brand").isBlank()) merged.put("brand", o.optString("brand"))
+                    val arr = o.optJSONArray("products") ?: JSONArray()
+                    for (i in 0 until arr.length()) mergedProducts.put(arr.getJSONObject(i))
+                }
+            }
+            chunkFile.delete()
+            start = end
+        }
+    }
+    tempDir.delete()
+    return merged.toString()
 }
 
 fun analyzePdfWithGemini(apiKey: String, fileName: String, file: File): String {
