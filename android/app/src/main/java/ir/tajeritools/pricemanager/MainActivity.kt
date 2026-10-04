@@ -149,7 +149,7 @@ fun App() {
             modifier = Modifier.padding(16.dp)
         )
         TabRow(selectedTabIndex = tab) {
-            listOf("جستجو", "کاتالوگ", "فایل‌ها", "فرمول", "PDF", "آنلاین", "سایت", "AI").forEachIndexed { i, t ->
+            listOf("جستجو", "کاتالوگ", "فایل‌ها", "فرمول", "PDF", "آنلاین", "سایت", "Paddle", "AI").forEachIndexed { i, t ->
                 Tab(selected = tab == i, onClick = { tab = i }, text = { Text(t) })
             }
         }
@@ -205,7 +205,8 @@ fun App() {
                 formulas = formulas,
                 onMessage = { message = it }
             )
-            7 -> AiScreen(
+            7 -> PaddleScreen()
+            8 -> AiScreen(
                 apiKey = apiKey,
                 onSave = {
                     apiKey = it.trim()
@@ -765,21 +766,68 @@ suspend fun importDocument(context: Context, uri: Uri, brandOverride: String, ap
     }
 
     val isPdf = mime == "application/pdf" || name.endsWith(".pdf", true)
-    val text = when {
-        isPdf -> runCatching { extractPdfTextSmart(outFile) }.getOrDefault("")
-        mime.startsWith("image/") -> runCatching { extractImageText(outFile) }.getOrDefault("")
-        name.endsWith(".csv", true) || mime.contains("csv") || mime.startsWith("text/") -> runCatching { outFile.readText() }.getOrDefault("")
-        else -> runCatching { outFile.readText() }.getOrDefault("")
+    val isImage = mime.startsWith("image/")
+    val paddleUrl = loadPaddleServerUrl(context)
+
+    val embeddedText = when {
+        isPdf -> runCatching { extractPdfText(outFile) }.getOrDefault("")
+        isImage && paddleUrl.isBlank() -> runCatching { extractImageText(outFile) }.getOrDefault("")
+        name.endsWith(".csv", true) || mime.contains("csv") || mime.startsWith("text/") ->
+            runCatching { outFile.readText() }.getOrDefault("")
+        !isPdf && !isImage -> runCatching { outFile.readText() }.getOrDefault("")
+        else -> ""
     }
 
-    val localBrand = brandOverride.ifBlank { detectBrand("$name\n$text") }
-    val aiJson = if (apiKey.isNotBlank()) {
-        when {
-            isPdf -> runCatching { analyzePdfAnySizeWithGemini(apiKey, name, outFile) }.getOrDefault("")
-            text.isNotBlank() -> runCatching { analyzeWithGemini(apiKey, name, text) }.getOrDefault("")
-            else -> ""
-        }
-    } else ""
+    val initialBrand = brandOverride.ifBlank { detectBrand("$name\n$embeddedText") }
+
+    val paddle = if (paddleUrl.isNotBlank() && (isPdf || isImage)) {
+        runCatching {
+            if (isPdf) {
+                analyzePdfWithPaddleServer(
+                    baseUrl = paddleUrl,
+                    file = outFile,
+                    brandHint = initialBrand,
+                    sourceName = name
+                )
+            } else {
+                analyzeImageWithPaddleServer(
+                    baseUrl = paddleUrl,
+                    file = outFile,
+                    brandHint = initialBrand,
+                    sourceName = name
+                )
+            }
+        }.getOrNull()
+    } else null
+
+    val text = when {
+        paddle != null && paddle.text.isNotBlank() -> paddle.text
+        embeddedText.isNotBlank() -> embeddedText
+        isPdf -> runCatching { extractPdfTextSmart(outFile) }.getOrDefault("")
+        isImage -> runCatching { extractImageText(outFile) }.getOrDefault("")
+        else -> ""
+    }
+
+    val localBrand = brandOverride.ifBlank {
+        detectBrand("$name\n$text").ifBlank { initialBrand }
+    }
+
+    val paddleJson = paddle?.aiJson.orEmpty()
+    val paddleRows = if (paddleJson.isNotBlank()) {
+        runCatching {
+            JSONObject(paddleJson).optJSONArray("products")?.length() ?: 0
+        }.getOrDefault(0)
+    } else 0
+
+    val aiJson = when {
+        paddleRows > 0 -> paddleJson
+        apiKey.isNotBlank() && isPdf ->
+            runCatching { analyzePdfAnySizeWithGemini(apiKey, name, outFile) }.getOrDefault("")
+        apiKey.isNotBlank() && text.isNotBlank() ->
+            runCatching { analyzeWithGemini(apiKey, name, text) }.getOrDefault("")
+        else -> ""
+    }
+
     val aiBrand = parseAiBrand(aiJson)
     val finalBrand = brandOverride.ifBlank { aiBrand.ifBlank { localBrand } }.ifBlank { "نامشخص" }
 
