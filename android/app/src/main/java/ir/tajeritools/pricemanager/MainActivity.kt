@@ -802,6 +802,11 @@ fun parseAiBrand(aiJson: String): String {
     return runCatching { JSONObject(aiJson).optString("brand").trim() }.getOrDefault("")
 }
 
+fun shouldAcceptAiProduct(name: String, code: String?, price: Double, confidence: Double): Boolean {
+    val identityOk = isMeaningfulProductName(name) && (code != null || name.length >= 5)
+    return identityOk && price.isFinite() && price >= 50_000 && confidence >= 0.72
+}
+
 fun parseAiProducts(doc: DocItem): List<ProductLine>? {
     if (doc.aiJson.isBlank()) return null
     return runCatching {
@@ -817,8 +822,7 @@ fun parseAiProducts(doc: DocItem): List<ProductLine>? {
                 val confidence = p.optDouble("confidence", 0.0)
                 val page = p.optInt("page", 0)
                 val evidence = p.optString("evidence").trim()
-                val identityOk = isMeaningfulProductName(name) && (code != null || name.length >= 5)
-                if (identityOk && price.isFinite() && price >= 50_000 && confidence >= 0.72) {
+                if (shouldAcceptAiProduct(name, code, price, confidence)) {
                     val src = buildString {
                         append("AI: ${doc.name}")
                         if (page > 0) append(" • صفحه $page")
