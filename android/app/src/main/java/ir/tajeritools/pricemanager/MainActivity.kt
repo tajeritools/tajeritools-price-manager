@@ -148,9 +148,24 @@ fun App() {
             style = MaterialTheme.typography.headlineSmall,
             modifier = Modifier.padding(16.dp)
         )
-        TabRow(selectedTabIndex = tab) {
+        ScrollableTabRow(
+            selectedTabIndex = tab,
+            edgePadding = 8.dp,
+            modifier = Modifier.fillMaxWidth()
+        ) {
             listOf("جستجو", "کاتالوگ", "فایل‌ها", "فرمول", "PDF", "آنلاین", "سایت", "Paddle", "AI").forEachIndexed { i, t ->
-                Tab(selected = tab == i, onClick = { tab = i }, text = { Text(t) })
+                Tab(
+                    selected = tab == i,
+                    onClick = { tab = i },
+                    modifier = Modifier.widthIn(min = 88.dp),
+                    text = {
+                        Text(
+                            text = t,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+                )
             }
         }
         message?.let {
