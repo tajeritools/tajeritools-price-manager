@@ -153,10 +153,11 @@ fun App() {
                     saveDocs(context, docs)
                 }
             )
-            2 -> FormulaScreen(formulas) { brand, formula ->
-                formulas = formulas.toMutableMap().apply { put(brand, formula) }
+            2 -> FormulaScreen(formulas) { brand, product, formula ->
+                val key = pricingRuleKey(brand, product)
+                formulas = formulas.toMutableMap().apply { put(key, formula) }
                 saveFormulas(context, formulas)
-                message = "فرمول $brand ذخیره شد."
+                message = if (product.isBlank()) "فرمول پیش‌فرض $brand ذخیره شد." else "فرمول $brand / $product ذخیره شد."
             }
             3 -> PdfScreen(docs, formulas)
             4 -> AiScreen(
@@ -199,7 +200,7 @@ fun SearchScreen(docs: List<DocItem>, formulas: Map<String, String>) {
                         Text("برند: ${p.brand}")
                         if (!p.code.isNullOrBlank()) Text("مدل/کد: ${p.code}")
                         Text("قیمت فایل: ${formatPrice(p.rawPrice)} تومان")
-                        formulaForBrand(formulas, p.brand)?.let { f ->
+                        formulaForProduct(formulas, p)?.let { f ->
                             runCatching { applyFormulaSteps(p.rawPrice, f) }.getOrNull()?.let { steps ->
                                 Text("قیمت نهایی: ${formatPrice(steps.last().second)} تومان")
                                 Text(formatFormulaTrace(p.rawPrice, steps), style = MaterialTheme.typography.bodySmall)
@@ -260,9 +261,10 @@ fun FilesScreen(
 @Composable
 fun FormulaScreen(
     formulas: Map<String, String>,
-    onSave: (String, String) -> Unit
+    onSave: (String, String, String) -> Unit
 ) {
     var brand by remember { mutableStateOf("") }
+    var product by remember { mutableStateOf("") }
     var supplierDiscount by remember { mutableStateOf("18") }
     var giftBuy by remember { mutableStateOf("0") }
     var giftFree by remember { mutableStateOf("0") }
@@ -305,9 +307,17 @@ fun FormulaScreen(
         OutlinedTextField(
             brand, { brand = it },
             label = { Text("برند") },
-            placeholder = { Text("مثلاً Arva") },
+            placeholder = { Text("مثلاً Anchor") },
             modifier = Modifier.fillMaxWidth()
         )
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            product, { product = it },
+            label = { Text("محصول یا مدل") },
+            placeholder = { Text("مثلاً DCE12 یا دریل شارژی؛ خالی = پیش‌فرض برند") },
+            modifier = Modifier.fillMaxWidth()
+        )
+        Text("برای هر مدل می‌توانی اشانتیون جدا تعریف کنی؛ مثلاً 7+1 یا 5+1.", style = MaterialTheme.typography.bodySmall)
         Spacer(Modifier.height(8.dp))
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
@@ -412,16 +422,18 @@ fun FormulaScreen(
         Button(
             onClick = {
                 if (formula.isBlank()) formula = buildProfessionalFormula()
-                if (brand.isNotBlank() && formula.isNotBlank()) onSave(brand.trim(), formula)
+                if (brand.isNotBlank() && formula.isNotBlank()) onSave(brand.trim(), product.trim(), formula)
             },
             modifier = Modifier.fillMaxWidth()
-        ) { Text("ذخیره برای این برند") }
+        ) { Text(if (product.isBlank()) "ذخیره پیش‌فرض برند" else "ذخیره برای این محصول/مدل") }
 
         Spacer(Modifier.height(14.dp))
         Divider()
         Text("فرمول‌های ذخیره‌شده", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 10.dp))
-        formulas.forEach { (b, f) ->
-            Text("$b : $f", modifier = Modifier.padding(vertical = 5.dp))
+        formulas.forEach { (k, f) ->
+            val parts = k.split("||", limit = 2)
+            val label = if (parts.size == 2 && parts[1].isNotBlank()) "${parts[0]} / ${parts[1]}" else parts[0]
+            Text("$label : $f", modifier = Modifier.padding(vertical = 5.dp))
         }
         Spacer(Modifier.height(40.dp))
     }
@@ -947,10 +959,10 @@ fun parseNumber(value: String): Double? {
     return Regex("\\d+(?:\\.\\d+)?").find(n)?.value?.toDoubleOrNull()
 }
 
-fun formulaForBrand(formulas: Map<String, String>, brand: String): String? {
+fun pricingRuleKey(brand: String, product: String): String =\n    if (product.isBlank()) brand.trim() else "${brand.trim()}||${product.trim()}"\n\nfun formulaForProduct(formulas: Map<String, String>, product: ProductLine): String? {\n    val brandNorm = normalize(product.brand)\n    val codeNorm = normalize(product.code.orEmpty())\n    val nameNorm = normalize(product.name)\n    val specific = formulas.entries.mapNotNull { (key, formula) ->\n        val parts = key.split("||", limit = 2)\n        if (parts.size != 2 || normalize(parts[0]) != brandNorm) return@mapNotNull null\n        val target = normalize(parts[1])\n        if (target.isBlank()) return@mapNotNull null\n        val score = when {\n            codeNorm.isNotBlank() && target == codeNorm -> 1000 + target.length\n            codeNorm.isNotBlank() && codeNorm.contains(target) -> 800 + target.length\n            nameNorm == target -> 700 + target.length\n            nameNorm.contains(target) -> 500 + target.length\n            else -> 0\n        }\n        if (score > 0) score to formula else null\n    }.maxByOrNull { it.first }\n    return specific?.second ?: formulaForBrand(formulas, product.brand)\n}\n\nfun formulaForBrand(formulas: Map<String, String>, brand: String): String? {
     formulas[brand]?.let { return it }
     val canonical = detectBrand(brand)
-    return formulas.entries.firstOrNull { (k, _) -> normalize(k) == normalize(brand) || (canonical.isNotBlank() && detectBrand(k) == canonical) }?.value
+    return formulas.entries.firstOrNull { (k, _) -> !k.contains("||") && (normalize(k) == normalize(brand) || (canonical.isNotBlank() && detectBrand(k) == canonical)) }?.value
 }
 
 fun applyFormulaSteps(input: Double, formula: String): List<Pair<String, Double>> {
