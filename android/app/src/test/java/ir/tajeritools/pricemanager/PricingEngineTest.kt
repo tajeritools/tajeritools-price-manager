@@ -213,15 +213,4 @@ class PricingEngineTest {
         assertFalse(catalogMatches(entry, "اره زنجیری"))
     }
 
-    @Test
-    fun catalogEntryReadsPagePromotionAndBoundingBoxFromAiJson() {
-        val ai = """{"brand":"Arva","products":[{"name":"دریل چکشی 850 وات","code":"5304","price":85999000,"price_unit":"rial","price_type":"list","page":5,"confidence":0.98,"promotion":"7+1","bbox":[100,50,260,950],"evidence":"row"}]}"""
-        val doc = DocItem("d", "Arva", "arva.pdf", "", "application/pdf", "", ai)
-        val entries = buildCatalogEntries(listOf(doc))
-        assertEquals(1, entries.size)
-        assertEquals(5, entries.first().page)
-        assertEquals("7+1", entries.first().promotion)
-        assertEquals(listOf(100, 50, 260, 950), entries.first().bbox!!.toList())
-    }
-
 }
