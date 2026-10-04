@@ -213,4 +213,15 @@ class PricingEngineTest {
         assertFalse(catalogMatches(entry, "اره زنجیری"))
     }
 
+    @Test
+    fun paddleServerUrlNormalization() {
+        assertEquals("http://192.168.1.20:8080", normalizePaddleBaseUrl(" http://192.168.1.20:8080/ "))
+        assertEquals("https://ocr.example.com", normalizePaddleBaseUrl("https://ocr.example.com/"))
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun paddleServerRejectsInvalidScheme() {
+        normalizePaddleBaseUrl("192.168.1.20:8080")
+    }
+
 }
