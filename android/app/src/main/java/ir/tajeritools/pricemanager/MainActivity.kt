@@ -959,83 +959,91 @@ fun applyFormulaSteps(input: Double, formula: String): List<Pair<String, Double>
         .map { normalize(it).replace('×', '*').replace('÷', '/').replace('−', '-').replace(" ", "") }
         .filter { it.isNotBlank() }
 
-    return buildList {
-        for (token0 in tokens) {
-            val token = token0.replace("قیمت", "price")
+    val result = mutableListOf<Pair<String, Double>>()
 
-            Regex("""discount\(([0-9]+(?:\.[0-9]+)?)\)""").matchEntire(token)?.let { m ->
-                val pct = m.groupValues[1].toDouble()
-                require(pct in 0.0..99.99) { "تخفیف نامعتبر" }
-                value *= (1.0 - pct / 100.0)
-                add(("تخفیف ${trimNumber(pct)}٪") to value)
-                continue
-            }
+    for (token0 in tokens) {
+        val token = token0.replace("قیمت", "price")
 
-            Regex("""gift\((\d+),(\d+)\)""").matchEntire(token)?.let { m ->
-                val buyQty = m.groupValues[1].toInt()
-                val freeQty = m.groupValues[2].toInt()
-                require(buyQty > 0 && freeQty > 0) { "اشانتیون نامعتبر" }
-                value *= buyQty.toDouble() / (buyQty + freeQty).toDouble()
-                add(("اشانتیون $buyQty+$freeQty") to value)
-                continue
-            }
-
-            Regex("""cost\(([0-9]+(?:\.[0-9]+)?)\)""").matchEntire(token)?.let { m ->
-                val pct = m.groupValues[1].toDouble()
-                require(pct >= 0.0) { "هزینه جانبی نامعتبر" }
-                value *= (1.0 + pct / 100.0)
-                add(("هزینه جانبی ${trimNumber(pct)}٪") to value)
-                continue
-            }
-
-            Regex("""margin\(([0-9]+(?:\.[0-9]+)?)\)""").matchEntire(token)?.let { m ->
-                val pct = m.groupValues[1].toDouble()
-                require(pct >= 0.0 && pct < 100.0) { "حاشیه سود نامعتبر" }
-                value /= (1.0 - pct / 100.0)
-                add(("حاشیه سود ${trimNumber(pct)}٪") to value)
-                continue
-            }
-
-            Regex("""markup\(([0-9]+(?:\.[0-9]+)?)\)""").matchEntire(token)?.let { m ->
-                val pct = m.groupValues[1].toDouble()
-                require(pct >= 0.0) { "سود روی هزینه نامعتبر" }
-                value *= (1.0 + pct / 100.0)
-                add(("سود روی هزینه ${trimNumber(pct)}٪") to value)
-                continue
-            }
-
-            Regex("""round\((\d+)\)""").matchEntire(token)?.let { m ->
-                val step = m.groupValues[1].toDouble()
-                require(step > 0) { "گردکردن نامعتبر" }
-                value = ceil(value / step) * step
-                add(("گردکردن ${step.toLong()}") to value)
-                continue
-            }
-
-            var opText = token
-            if (opText.startsWith("price")) opText = opText.removePrefix("price")
-            val old = Regex("""^([+\-*/])([0-9]+(?:\.[0-9]+)?)(%)?$""").matchEntire(opText)
-            if (old != null) {
-                val op = old.groupValues[1]
-                val num = old.groupValues[2].toDouble()
-                val pct = old.groupValues[3] == "%"
-                val before = value
-                value = when (op) {
-                    "+" -> if (pct) before + before * num / 100.0 else before + num
-                    "-" -> if (pct) before - before * num / 100.0 else before - num
-                    "*" -> if (pct) before * (num / 100.0) else before * num
-                    "/" -> {
-                        val d = if (pct) num / 100.0 else num
-                        require(d != 0.0) { "تقسیم بر صفر" }
-                        before / d
-                    }
-                    else -> before
-                }
-                add(("$op${trimNumber(num)}${if (pct) "%" else ""}") to value)
-            }
+        val discountMatch = Regex("""discount\(([0-9]+(?:\.[0-9]+)?)\)""").matchEntire(token)
+        if (discountMatch != null) {
+            val pct = discountMatch.groupValues[1].toDouble()
+            require(pct in 0.0..99.99) { "تخفیف نامعتبر" }
+            value *= (1.0 - pct / 100.0)
+            result += ("تخفیف ${trimNumber(pct)}٪" to value)
+            continue
         }
-        require(isNotEmpty()) { "هیچ مرحله قابل محاسبه‌ای پیدا نشد" }
+
+        val giftMatch = Regex("""gift\((\d+),(\d+)\)""").matchEntire(token)
+        if (giftMatch != null) {
+            val buyQty = giftMatch.groupValues[1].toInt()
+            val freeQty = giftMatch.groupValues[2].toInt()
+            require(buyQty > 0 && freeQty > 0) { "اشانتیون نامعتبر" }
+            value *= buyQty.toDouble() / (buyQty + freeQty).toDouble()
+            result += ("اشانتیون $buyQty+$freeQty" to value)
+            continue
+        }
+
+        val costMatch = Regex("""cost\(([0-9]+(?:\.[0-9]+)?)\)""").matchEntire(token)
+        if (costMatch != null) {
+            val pct = costMatch.groupValues[1].toDouble()
+            require(pct >= 0.0) { "هزینه جانبی نامعتبر" }
+            value *= (1.0 + pct / 100.0)
+            result += ("هزینه جانبی ${trimNumber(pct)}٪" to value)
+            continue
+        }
+
+        val marginMatch = Regex("""margin\(([0-9]+(?:\.[0-9]+)?)\)""").matchEntire(token)
+        if (marginMatch != null) {
+            val pct = marginMatch.groupValues[1].toDouble()
+            require(pct >= 0.0 && pct < 100.0) { "حاشیه سود نامعتبر" }
+            value /= (1.0 - pct / 100.0)
+            result += ("حاشیه سود ${trimNumber(pct)}٪" to value)
+            continue
+        }
+
+        val markupMatch = Regex("""markup\(([0-9]+(?:\.[0-9]+)?)\)""").matchEntire(token)
+        if (markupMatch != null) {
+            val pct = markupMatch.groupValues[1].toDouble()
+            require(pct >= 0.0) { "سود روی هزینه نامعتبر" }
+            value *= (1.0 + pct / 100.0)
+            result += ("سود روی هزینه ${trimNumber(pct)}٪" to value)
+            continue
+        }
+
+        val roundMatch = Regex("""round\((\d+)\)""").matchEntire(token)
+        if (roundMatch != null) {
+            val step = roundMatch.groupValues[1].toDouble()
+            require(step > 0) { "گردکردن نامعتبر" }
+            value = ceil(value / step) * step
+            result += ("گردکردن ${step.toLong()}" to value)
+            continue
+        }
+
+        var opText = token
+        if (opText.startsWith("price")) opText = opText.removePrefix("price")
+        val old = Regex("""^([+\-*/])([0-9]+(?:\.[0-9]+)?)(%)?$""").matchEntire(opText)
+        if (old != null) {
+            val op = old.groupValues[1]
+            val num = old.groupValues[2].toDouble()
+            val pct = old.groupValues[3] == "%"
+            val before = value
+            value = when (op) {
+                "+" -> if (pct) before + before * num / 100.0 else before + num
+                "-" -> if (pct) before - before * num / 100.0 else before - num
+                "*" -> if (pct) before * (num / 100.0) else before * num
+                "/" -> {
+                    val d = if (pct) num / 100.0 else num
+                    require(d != 0.0) { "تقسیم بر صفر" }
+                    before / d
+                }
+                else -> before
+            }
+            result += ("$op${trimNumber(num)}${if (pct) "%" else ""}" to value)
+        }
     }
+
+    require(result.isNotEmpty()) { "هیچ مرحله قابل محاسبه‌ای پیدا نشد" }
+    return result
 }
 fun applyFormula(input: Double, formula: String): Double = applyFormulaSteps(input, formula).last().second
 
