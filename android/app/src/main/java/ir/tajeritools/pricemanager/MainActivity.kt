@@ -45,6 +45,7 @@ import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
+import java.net.URI
 import java.net.URL
 import java.net.URLEncoder
 import java.text.DecimalFormat
@@ -81,6 +82,21 @@ data class SitePricePreview(
     val currentPrice: Double?,
     val matched: Boolean,
     val error: String? = null
+)
+
+data class TrustedSource(
+    val brand: String,
+    val label: String,
+    val url: String,
+    val domains: List<String>
+)
+
+fun defaultTrustedSources(): List<TrustedSource> = listOf(
+    TrustedSource("Ronix", "سایت رسمی رونیکس", "https://www.ronix.ir/", listOf("ronix.ir")),
+    TrustedSource("Tosan", "سایت رسمی توسن", "https://tosantools.com/", listOf("tosantools.com")),
+    TrustedSource("Anchor", "سایت رسمی PM / Anchor", "https://pmtools.tools/", listOf("pmtools.tools")),
+    TrustedSource("Arva", "سایت رسمی آروا", "https://arvatools.com/", listOf("arvatools.com")),
+    TrustedSource("Nova", "سایت رسمی نوا", "https://novatech-tools.com/", listOf("novatech-tools.com"))
 )
 
 class MainActivity : ComponentActivity() {
@@ -133,7 +149,7 @@ fun App() {
             modifier = Modifier.padding(16.dp)
         )
         TabRow(selectedTabIndex = tab) {
-            listOf("جستجو", "فایل‌ها", "فرمول", "PDF", "سایت", "AI").forEachIndexed { i, t ->
+            listOf("جستجو", "فایل‌ها", "فرمول", "PDF", "آنلاین", "سایت", "AI").forEachIndexed { i, t ->
                 Tab(selected = tab == i, onClick = { tab = i }, text = { Text(t) })
             }
         }
@@ -174,12 +190,21 @@ fun App() {
                 message = if (product.isBlank()) "فرمول پیش‌فرض $brand ذخیره شد." else "فرمول $brand / $product ذخیره شد."
             }
             3 -> PdfScreen(docs, formulas)
-            4 -> SiteSyncScreen(
+            4 -> OnlineSourceScreen(
+                apiKey = apiKey,
+                onImported = { item ->
+                    docs = docs + item
+                    saveDocs(context, docs)
+                    message = "منبع آنلاین ${item.brand} بروزرسانی شد."
+                },
+                onMessage = { message = it }
+            )
+            5 -> SiteSyncScreen(
                 docs = docs,
                 formulas = formulas,
                 onMessage = { message = it }
             )
-            5 -> AiScreen(
+            6 -> AiScreen(
                 apiKey = apiKey,
                 onSave = {
                     apiKey = it.trim()
@@ -570,6 +595,72 @@ fun SiteSyncScreen(
         }
 
         Spacer(Modifier.height(30.dp))
+    }
+}
+
+@Composable
+fun OnlineSourceScreen(
+    apiKey: String,
+    onImported: (DocItem) -> Unit,
+    onMessage: (String) -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val sources = remember { defaultTrustedSources() }
+    var brand by remember { mutableStateOf(sources.first().brand) }
+    var customUrl by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+
+    val selected = sources.firstOrNull { it.brand == brand } ?: sources.first()
+
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp)) {
+        Text("بروزرسانی آنلاین قیمت‌ها", style = MaterialTheme.typography.titleLarge)
+        Text("فقط منبع رسمی/معتبر همان برند پذیرفته می‌شود.", style = MaterialTheme.typography.bodySmall)
+        Spacer(Modifier.height(8.dp))
+
+        sources.forEach { src ->
+            FilterChip(
+                selected = brand == src.brand,
+                onClick = { brand = src.brand; customUrl = "" },
+                label = { Text(src.brand) },
+                modifier = Modifier.padding(end = 6.dp, bottom = 4.dp)
+            )
+        }
+
+        Text("منبع: ${selected.label}")
+        Text(selected.url, style = MaterialTheme.typography.bodySmall)
+
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = customUrl,
+            onValueChange = { customUrl = it },
+            label = { Text("لینک رسمی صفحه یا PDF (اختیاری)") },
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Spacer(Modifier.height(8.dp))
+        Button(
+            enabled = !busy && apiKey.isNotBlank(),
+            onClick = {
+                scope.launch {
+                    busy = true
+                    val target = customUrl.trim().ifBlank { selected.url }
+                    runCatching {
+                        syncTrustedOnlineSource(
+                            context = context,
+                            source = selected.copy(url = target),
+                            apiKey = apiKey
+                        )
+                    }.onSuccess(onImported)
+                     .onFailure { onMessage("خطا در بروزرسانی آنلاین: ${it.message}") }
+                    busy = false
+                }
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) { Text(if (busy) "در حال دریافت و تحلیل…" else "بروزرسانی از منبع معتبر") }
+
+        if (apiKey.isBlank()) Text("ابتدا کلید Gemini را در تب AI ذخیره کن.")
+        Spacer(Modifier.height(20.dp))
     }
 }
 
@@ -1402,6 +1493,138 @@ suspend fun pushWooPrices(
         updated++
     }
     updated
+}
+
+
+fun isTrustedUrl(url: String, source: TrustedSource): Boolean {
+    val host = runCatching { URI(url).host?.lowercase(Locale.ROOT).orEmpty() }.getOrDefault("")
+    return source.domains.any { domain -> host == domain || host.endsWith(".$domain") }
+}
+
+fun fetchUrlBytes(url: String, maxBytes: Int = 12 * 1024 * 1024): Pair<ByteArray, String> {
+    val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+        requestMethod = "GET"
+        connectTimeout = 20_000
+        readTimeout = 45_000
+        instanceFollowRedirects = true
+        setRequestProperty("User-Agent", "TajeriToolsPriceManager/1.0")
+        setRequestProperty("Accept", "text/html,application/pdf,text/plain,*/*")
+    }
+    val code = connection.responseCode
+    require(code in 200..299) { "HTTP $code" }
+    val type = connection.contentType.orEmpty().lowercase(Locale.ROOT)
+    val bytes = connection.inputStream.use { input ->
+        val out = java.io.ByteArrayOutputStream()
+        val buffer = ByteArray(8192)
+        while (true) {
+            val n = input.read(buffer)
+            if (n <= 0) break
+            require(out.size() + n <= maxBytes) { "حجم منبع بیشتر از حد مجاز است" }
+            out.write(buffer, 0, n)
+        }
+        out.toByteArray()
+    }
+    return bytes to type
+}
+
+fun htmlToText(html: String): String =
+    html.replace(Regex("""(?is)<script.*?>.*?</script>"""), " ")
+        .replace(Regex("""(?is)<style.*?>.*?</style>"""), " ")
+        .replace(Regex("""(?is)<[^>]+>"""), " ")
+        .replace("&nbsp;", " ").replace("&amp;", "&")
+        .replace("&quot;", "\"").replace("&#39;", "'")
+        .replace(Regex("""\s+"""), " ").trim()
+
+fun analyzeOnlineSourceWithGemini(apiKey: String, brand: String, sourceUrl: String, content: String): String {
+    val prompt = """
+You normalize CURRENT product pricing from an authoritative tool-brand source.
+Expected brand: $brand
+Authoritative source: $sourceUrl
+
+Return ONLY JSON:
+{"brand":"brand","products":[{"name":"specific product name","code":"model/code or empty","price":123456,"price_unit":"rial|toman","price_type":"list|wholesale|retail|special|mrp|other","page":0,"confidence":0.95,"evidence":"short exact source context"}]}
+
+Rules:
+- Include only products whose current price is explicitly present.
+- Never invent missing prices, units, models, or products.
+- Keep name/code/price from the same row or product card.
+- price_unit must come from explicit source evidence and be exactly rial or toman.
+- If multiple prices exist, classify price_type and choose the current operative/base price.
+- Do not treat discounts, tax percentages, quantity thresholds, or 7+1 / 5+1 promotions as prices.
+- Omit uncertain identity-price matches.
+CONTENT:
+${content.take(220_000)}
+""".trimIndent()
+
+    val request = JSONObject().apply {
+        put("contents", JSONArray().put(JSONObject().apply {
+            put("parts", JSONArray().put(JSONObject().put("text", prompt)))
+        }))
+        put("generationConfig", JSONObject()
+            .put("responseMimeType", "application/json")
+            .put("temperature", 0.0)
+            .put("maxOutputTokens", 32768))
+    }
+
+    val connection = (URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent").openConnection() as HttpURLConnection).apply {
+        requestMethod = "POST"
+        connectTimeout = 30_000
+        readTimeout = 120_000
+        doOutput = true
+        setRequestProperty("Content-Type", "application/json")
+        setRequestProperty("x-goog-api-key", apiKey)
+    }
+    connection.outputStream.use { it.write(request.toString().toByteArray(Charsets.UTF_8)) }
+    val code = connection.responseCode
+    val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+    val body = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+    require(code in 200..299) { "Gemini HTTP $code: ${body.take(300)}" }
+    return JSONObject(body).getJSONArray("candidates").getJSONObject(0)
+        .getJSONObject("content").getJSONArray("parts").getJSONObject(0)
+        .getString("text").trim()
+}
+
+suspend fun syncTrustedOnlineSource(
+    context: Context,
+    source: TrustedSource,
+    apiKey: String
+): DocItem = withContext(Dispatchers.IO) {
+    require(apiKey.isNotBlank()) { "کلید AI تنظیم نشده است" }
+    require(isTrustedUrl(source.url, source)) { "این URL خارج از دامنه معتبر برند است" }
+
+    val (bytes, contentType) = fetchUrlBytes(source.url)
+    val isPdf = contentType.contains("pdf") || source.url.lowercase(Locale.ROOT).endsWith(".pdf")
+    val dir = File(context.filesDir, "online").apply { mkdirs() }
+
+    if (isPdf) {
+        val file = File(dir, "${source.brand}-${System.currentTimeMillis()}.pdf")
+        file.writeBytes(bytes)
+        val ai = analyzePdfAnySizeWithGemini(apiKey, file.name, file)
+        val text = runCatching { extractPdfTextSmart(file) }.getOrDefault("")
+        DocItem(
+            id = "online-${System.currentTimeMillis()}",
+            brand = parseAiBrand(ai).ifBlank { source.brand },
+            name = "آنلاین ${source.label}",
+            path = file.absolutePath,
+            mime = "application/pdf",
+            text = text,
+            aiJson = ai
+        )
+    } else {
+        val raw = htmlToText(bytes.toString(Charsets.UTF_8))
+        val ai = analyzeOnlineSourceWithGemini(apiKey, source.brand, source.url, raw)
+        val file = File(dir, "${source.brand}-${System.currentTimeMillis()}.txt")
+        file.writeText(raw)
+        DocItem(
+            id = "online-${System.currentTimeMillis()}",
+            brand = parseAiBrand(ai).ifBlank { source.brand },
+            name = "آنلاین ${source.label}",
+            path = file.absolutePath,
+            mime = "text/plain",
+            text = raw,
+            aiJson = ai
+        )
+    }
 }
 
 fun normalizePriceUnit(value: String): String {
