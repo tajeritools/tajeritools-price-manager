@@ -66,7 +66,10 @@ data class ProductLine(
     val name: String,
     val code: String?,
     val rawPrice: Double,
-    val source: String
+    val source: String,
+    val sourcePrice: Double = rawPrice,
+    val priceUnit: String = "toman",
+    val priceType: String = "list"
 )
 
 class MainActivity : ComponentActivity() {
@@ -199,7 +202,13 @@ fun SearchScreen(docs: List<DocItem>, formulas: Map<String, String>) {
                         Text(p.name, style = MaterialTheme.typography.titleMedium)
                         Text("برند: ${p.brand}")
                         if (!p.code.isNullOrBlank()) Text("مدل/کد: ${p.code}")
-                        Text("قیمت فایل: ${formatPrice(p.rawPrice)} تومان")
+                        Text("قیمت فایل: ${formatPrice(p.sourcePrice)} ${unitLabel(p.priceUnit)}")
+                        if (p.priceUnit == "rial") {
+                            Text("مبنای محاسبه: ${formatPrice(p.rawPrice)} تومان")
+                        }
+                        if (p.priceType.isNotBlank() && p.priceType != "list") {
+                            Text("نوع قیمت: ${p.priceType}", style = MaterialTheme.typography.bodySmall)
+                        }
                         formulaForProduct(formulas, p)?.let { f ->
                             runCatching { applyFormulaSteps(p.rawPrice, f) }.getOrNull()?.let { steps ->
                                 Text("قیمت نهایی: ${formatPrice(steps.last().second)} تومان")
@@ -445,7 +454,7 @@ fun AiScreen(apiKey: String, onSave: (String) -> Unit) {
     Column(Modifier.fillMaxSize().padding(12.dp)) {
         Text("هوش مصنوعی Gemini", style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.height(8.dp))
-        Text("اگر کلید Gemini API را وارد کنید، هنگام ورود فایل، AI برند و ردیف‌های محصول را از متن PDF تشخیص می‌دهد. قیمت حدس زده نمی‌شود و باید در خود فایل وجود داشته باشد.")
+        Text("AI خود PDF را می‌خواند و برند، محصول، مدل، قیمت، واحد ریال/تومان و نوع قیمت را تشخیص می‌دهد. قیمت یا واحد حدس زده نمی‌شود.")
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(
             value = key,
@@ -733,6 +742,7 @@ fun extractProducts(doc: DocItem): List<ProductLine> {
 }
 
 fun extractProductsFromTextBlocks(brand: String, text: String, sourceName: String): List<ProductLine> {
+    val documentUnit = detectPriceUnit(text)
     val lines = text.lines()
         .map { it.replace(Regex("""\s+"""), " ").trim() }
         .filter { it.isNotBlank() }
@@ -780,7 +790,8 @@ fun extractProductsFromTextBlocks(brand: String, text: String, sourceName: Strin
             compareBy<Triple<String, Double, Int>> { it.third }.thenBy { it.first.length }
         ) ?: continue
         val priceToken = pickedPrice.first
-        val price = pickedPrice.second
+        val sourcePrice = pickedPrice.second
+        val price = priceToToman(sourcePrice, documentUnit)
 
         val codeCandidates = codeRegex.findAll(allText)
             .map { it.value.replace(" ", "") }
@@ -849,6 +860,7 @@ fun parseBrokenGroupedPrice(value: String): Double? {
 }
 
 fun extractProductsFromCodeFirstBlocks(brand: String, text: String, sourceName: String): List<ProductLine> {
+    val documentUnit = detectPriceUnit(text)
     val lines = text.lines()
         .map { normalize(it).replace(Regex("""\s+"""), " ").trim() }
         .filter { it.isNotBlank() }
@@ -890,6 +902,8 @@ fun extractProductsFromCodeFirstBlocks(brand: String, text: String, sourceName: 
             }
         }
         if (price == null) continue
+        val sourcePrice = price
+        val normalizedPrice = priceToToman(sourcePrice, documentUnit)
 
         val nameLines = chunk.drop(1)
             .take(if (priceLineIndex > 0) priceLineIndex else 8)
@@ -914,8 +928,11 @@ fun extractProductsFromCodeFirstBlocks(brand: String, text: String, sourceName: 
             brand = brand,
             name = name.take(180),
             code = code,
-            rawPrice = price,
-            source = "$sourceName • code-first"
+            rawPrice = normalizedPrice,
+            source = "$sourceName • code-first",
+            sourcePrice = sourcePrice,
+            priceUnit = documentUnit,
+            priceType = "list"
         )
     }
     return out.distinctBy { "${it.brand}|${it.code}|${it.rawPrice}" }
@@ -956,17 +973,29 @@ fun parseAiProducts(doc: DocItem): List<ProductLine>? {
                 val p = arr.optJSONObject(i) ?: continue
                 val name = repairProductName(p.optString("name").trim())
                 val code = p.optString("code").trim().takeIf { it.isNotBlank() && !isLikelyYearCode(it) }
-                val price = p.optDouble("price", Double.NaN)
+                val sourcePrice = p.optDouble("price", Double.NaN)
+                val unit = normalizePriceUnit(p.optString("price_unit"))
+                val priceType = p.optString("price_type").trim().ifBlank { "list" }
+                val price = priceToToman(sourcePrice, unit)
                 val confidence = p.optDouble("confidence", 0.0)
                 val page = p.optInt("page", 0)
                 val evidence = p.optString("evidence").trim()
-                if (shouldAcceptAiProduct(name, code, price, confidence)) {
+                if (shouldAcceptAiProduct(name, code, price, confidence) && unit != "unknown") {
                     val src = buildString {
                         append("AI: ${doc.name}")
                         if (page > 0) append(" • صفحه $page")
                         if (evidence.isNotBlank()) append(" • ${evidence.take(120)}")
                     }
-                    add(ProductLine(brand, name, code, price, src))
+                    add(ProductLine(
+                        brand = brand,
+                        name = name,
+                        code = code,
+                        rawPrice = price,
+                        source = src,
+                        sourcePrice = sourcePrice,
+                        priceUnit = unit,
+                        priceType = priceType
+                    ))
                 }
             }
         }
@@ -978,12 +1007,15 @@ fun analyzeWithGemini(apiKey: String, fileName: String, text: String): String {
     val prompt = """
 You analyze Iranian tool-store price lists.
 Return ONLY valid JSON with this exact shape:
-{"brand":"brand name","products":[{"name":"specific product name","code":"model/code or empty","price":123456,"page":1,"confidence":0.95,"evidence":"short row context"}]}
+{"brand":"brand name","products":[{"name":"specific product name","code":"model/code or empty","price":123456,"price_unit":"rial|toman","price_type":"list|wholesale|retail|special|mrp|other","page":1,"confidence":0.95,"evidence":"short row context"}]}
 
 Rules:
 - Detect brand from the filename and document text.
 - Extract only real product rows that contain a price in the supplied document.\n- Every returned product MUST include a specific product name; include its model/code whenever visible.\n- Never return a row whose only description is a date, quantity, page number, or generic placeholder.\n- Never invent a price, product, model, or brand.
 - Preserve the numeric price semantically; remove thousands separators only.
+- Detect the currency/unit from the document itself. price_unit MUST be exactly "rial" or "toman"; never guess. If the unit is not supported by visible evidence, omit that row.
+- If multiple prices exist for a product, identify price_type and choose the CURRENT operative price shown by the list. Do not mix MRP, old price, tax, discount percentage, wholesale tier, or promotional price unless that is explicitly the operative price column.
+- If multiple quantity tiers exist, extract the normal/base current price unless the row explicitly marks a tier as the primary trade price.
 - Keep each product tied to the SAME row/table cell group as its price. Never borrow a name from another row.
 - confidence must be 0..1; use high confidence only when name/model/price alignment is visually clear.
 - page is the 1-based page number and evidence is short row-level context.
@@ -1098,12 +1130,15 @@ fun analyzePdfWithGemini(apiKey: String, fileName: String, file: File, originalP
     val prompt = """
 You analyze Iranian tool-store price-list PDFs.
 Return ONLY valid JSON:
-{"brand":"brand name","products":[{"name":"specific product name","code":"model/code or empty","price":123456,"page":1,"confidence":0.95,"evidence":"short row context"}]}
+{"brand":"brand name","products":[{"name":"specific product name","code":"model/code or empty","price":123456,"price_unit":"rial|toman","price_type":"list|wholesale|retail|special|mrp|other","page":1,"confidence":0.95,"evidence":"short row context"}]}
 Rules:
 - Read the PDF itself, including scanned pages and tables.
 - Extract only actual product sale-price rows.\n- Every returned row MUST contain the specific product name and model/code when visible in the table.\n- If the name/model cannot be tied confidently to the price, omit that row.\n- Never treat model codes, dates, page numbers, phone numbers, percentages or quantities as prices.
 - Never invent data.
 - Preserve the actual document price; remove separators only.
+- Detect price_unit from visible document labels; it MUST be "rial" or "toman". Never infer the unit from number size alone.
+- If the page contains retail, wholesale, MRP, old/new, tax-inclusive/exclusive, or quantity-tier prices, classify price_type and select the current operative/base price for that row. Never merge numbers from different columns.
+- Promotional free-item text such as "7+1" is NOT a price; keep it out of price and mention it only in evidence.
 - Keep name/model/price from the SAME visual row or cell group; never pair adjacent products.
 - page is 1-based inside the provided PDF. confidence is 0..1. evidence must summarize the exact visual row.
 - Omit uncertain rows; missing a row is better than assigning a wrong price.
@@ -1137,6 +1172,31 @@ fun parseNumber(value: String): Double? {
     val n = normalize(value).replace("٬", "").replace(",", "").replace("/", "")
     return Regex("\\d+(?:\\.\\d+)?").find(n)?.value?.toDoubleOrNull()
 }
+
+fun normalizePriceUnit(value: String): String {
+    val s = normalize(value)
+    return when {
+        s.contains("تومان") || s.contains("toman") -> "toman"
+        s.contains("ریال") || s.contains("rial") -> "rial"
+        else -> "unknown"
+    }
+}
+
+fun detectPriceUnit(value: String): String = normalizePriceUnit(value)
+
+fun priceToToman(price: Double, unit: String): Double =
+    when (unit) {
+        "rial" -> price / 10.0
+        "toman" -> price
+        else -> price
+    }
+
+fun unitLabel(unit: String): String =
+    when (unit) {
+        "rial" -> "ریال"
+        "toman" -> "تومان"
+        else -> "واحد نامشخص"
+    }
 
 fun pricingRuleKey(brand: String, product: String): String =
     if (product.isBlank()) brand.trim() else "${brand.trim()}||${product.trim()}"
