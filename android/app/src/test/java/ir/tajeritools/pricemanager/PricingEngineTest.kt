@@ -36,6 +36,42 @@ class PricingEngineTest {
     }
 
     @Test
+    fun productSpecificRuleOverridesBrandDefault() {
+        val formulas = mapOf(
+            "Anchor" to "discount(18)=margin(10)",
+            "Anchor||DCE12" to "discount(18)=gift(7,1)=margin(10)",
+            "Anchor||DCE20" to "discount(18)=gift(5,1)=margin(10)"
+        )
+        val p12 = ProductLine("Anchor", "دریل شارژی", "DCE12", 20_000_000.0, "test")
+        val p20 = ProductLine("Anchor", "دریل شارژی", "DCE20", 20_000_000.0, "test")
+        val other = ProductLine("Anchor", "دریل شارژی", "DCE99", 20_000_000.0, "test")
+
+        assertEquals("discount(18)=gift(7,1)=margin(10)", formulaForProduct(formulas, p12))
+        assertEquals("discount(18)=gift(5,1)=margin(10)", formulaForProduct(formulas, p20))
+        assertEquals("discount(18)=margin(10)", formulaForProduct(formulas, other))
+    }
+
+    @Test
+    fun aiRowsNeedConfidenceAndIdentity() {
+        val doc = DocItem(
+            id = "ai",
+            brand = "Arva",
+            name = "sample.pdf",
+            path = "",
+            mime = "application/pdf",
+            text = "",
+            aiJson = """{"brand":"Arva","products":[
+                {"name":"جارو شارژی","code":"5951","price":59999000,"page":15,"confidence":0.96,"evidence":"5951 جارو شارژی 59,999,000"},
+                {"name":"دستگاه","code":"","price":12345678,"page":1,"confidence":0.40,"evidence":"unclear"}
+            ]}"""
+        )
+        val rows = parseAiProducts(doc).orEmpty()
+        assertEquals(1, rows.size)
+        assertEquals("5951", rows.first().code)
+        assertEquals(59_999_000.0, rows.first().rawPrice, 0.5)
+    }
+
+    @Test
     fun parserRejectsDateAsPriceAndKeepsRealModel() {
         val doc = DocItem(
             id = "t",
