@@ -5,6 +5,7 @@
         android:allowBackup="true"
         android:label="TajeriTools Price Manager"
         android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
         android:theme="@style/AppTheme">
         <activity
             android:name=".MainActivity"
