@@ -149,7 +149,7 @@ fun App() {
             modifier = Modifier.padding(16.dp)
         )
         TabRow(selectedTabIndex = tab) {
-            listOf("جستجو", "فایل‌ها", "فرمول", "PDF", "آنلاین", "سایت", "AI").forEachIndexed { i, t ->
+            listOf("جستجو", "کاتالوگ", "فایل‌ها", "فرمول", "PDF", "آنلاین", "سایت", "AI").forEachIndexed { i, t ->
                 Tab(selected = tab == i, onClick = { tab = i }, text = { Text(t) })
             }
         }
@@ -164,7 +164,8 @@ fun App() {
 
         when (tab) {
             0 -> SearchScreen(docs, formulas)
-            1 -> FilesScreen(
+            1 -> CatalogScreen(docs, formulas)
+            2 -> FilesScreen(
                 docs = docs,
                 brand = pendingBrand,
                 onBrand = { pendingBrand = it },
@@ -183,14 +184,14 @@ fun App() {
                     saveDocs(context, docs)
                 }
             )
-            2 -> FormulaScreen(formulas) { brand, product, formula ->
+            3 -> FormulaScreen(formulas) { brand, product, formula ->
                 val key = pricingRuleKey(brand, product)
                 formulas = formulas.toMutableMap().apply { put(key, formula) }
                 saveFormulas(context, formulas)
                 message = if (product.isBlank()) "فرمول پیش‌فرض $brand ذخیره شد." else "فرمول $brand / $product ذخیره شد."
             }
-            3 -> PdfScreen(docs, formulas)
-            4 -> OnlineSourceScreen(
+            4 -> PdfScreen(docs, formulas)
+            5 -> OnlineSourceScreen(
                 apiKey = apiKey,
                 onImported = { item ->
                     docs = docs + item
@@ -199,12 +200,12 @@ fun App() {
                 },
                 onMessage = { message = it }
             )
-            5 -> SiteSyncScreen(
+            6 -> SiteSyncScreen(
                 docs = docs,
                 formulas = formulas,
                 onMessage = { message = it }
             )
-            6 -> AiScreen(
+            7 -> AiScreen(
                 apiKey = apiKey,
                 onSave = {
                     apiKey = it.trim()
@@ -1223,7 +1224,7 @@ fun analyzeWithGemini(apiKey: String, fileName: String, text: String): String {
     val prompt = """
 You analyze Iranian tool-store price lists.
 Return ONLY valid JSON with this exact shape:
-{"brand":"brand name","products":[{"name":"specific product name","code":"model/code or empty","price":123456,"price_unit":"rial|toman","price_type":"list|wholesale|retail|special|mrp|other","page":1,"confidence":0.95,"evidence":"short row context"}]}
+{"brand":"brand name","products":[{"name":"specific product name","code":"model/code or empty","price":123456,"price_unit":"rial|toman","price_type":"list|wholesale|retail|special|mrp|other","page":1,"confidence":0.95,"promotion":"7+1 or other visible offer, else empty","bbox":[120,80,250,920],"evidence":"short row context"}]}
 
 Rules:
 - Detect brand from the filename and document text.
@@ -1235,6 +1236,8 @@ Rules:
 - Keep each product tied to the SAME row/table cell group as its price. Never borrow a name from another row.
 - confidence must be 0..1; use high confidence only when name/model/price alignment is visually clear.
 - page is the 1-based page number and evidence is short row-level context.
+- promotion is only a visible free-item/buy-X-get-Y offer tied to that exact product row; otherwise empty.
+- bbox is [ymin,xmin,ymax,xmax] for the exact visual product row/card, normalized to 0..1000 within the page. It must include the product image, name/model and price when they are in the same row.
 - If uncertain about identity or price alignment, omit the row.
 - Common brands include Ronix, Tosan, Anchor, Nova, Arva, Pukka, Vivarex.
 Filename: $fileName
@@ -1346,7 +1349,7 @@ fun analyzePdfWithGemini(apiKey: String, fileName: String, file: File, originalP
     val prompt = """
 You analyze Iranian tool-store price-list PDFs.
 Return ONLY valid JSON:
-{"brand":"brand name","products":[{"name":"specific product name","code":"model/code or empty","price":123456,"price_unit":"rial|toman","price_type":"list|wholesale|retail|special|mrp|other","page":1,"confidence":0.95,"evidence":"short row context"}]}
+{"brand":"brand name","products":[{"name":"specific product name","code":"model/code or empty","price":123456,"price_unit":"rial|toman","price_type":"list|wholesale|retail|special|mrp|other","page":1,"confidence":0.95,"promotion":"7+1 or other visible offer, else empty","bbox":[120,80,250,920],"evidence":"short row context"}]}
 Rules:
 - Read the PDF itself, including scanned pages and tables.
 - Extract only actual product sale-price rows.\n- Every returned row MUST contain the specific product name and model/code when visible in the table.\n- If the name/model cannot be tied confidently to the price, omit that row.\n- Never treat model codes, dates, page numbers, phone numbers, percentages or quantities as prices.
@@ -1357,6 +1360,8 @@ Rules:
 - Promotional free-item text such as "7+1" is NOT a price; keep it out of price and mention it only in evidence.
 - Keep name/model/price from the SAME visual row or cell group; never pair adjacent products.
 - page is 1-based inside the provided PDF. confidence is 0..1. evidence must summarize the exact visual row.
+- promotion is only a visible buy-X-get-Y/free-item offer tied to that exact row; otherwise empty.
+- bbox is [ymin,xmin,ymax,xmax], normalized to 0..1000 within the page, covering the exact product row/card including its image/name/model/price when possible.
 - Omit uncertain rows; missing a row is better than assigning a wrong price.
 Filename: $fileName\nOriginal PDF page offset: $originalPageOffset\nReturn page numbers relative to THIS chunk starting from 1.\n""".trimIndent()
     val encoded = Base64.encodeToString(file.readBytes(), Base64.NO_WRAP)
@@ -1542,7 +1547,7 @@ Expected brand: $brand
 Authoritative source: $sourceUrl
 
 Return ONLY JSON:
-{"brand":"brand","products":[{"name":"specific product name","code":"model/code or empty","price":123456,"price_unit":"rial|toman","price_type":"list|wholesale|retail|special|mrp|other","page":0,"confidence":0.95,"evidence":"short exact source context"}]}
+{"brand":"brand","products":[{"name":"specific product name","code":"model/code or empty","price":123456,"price_unit":"rial|toman","price_type":"list|wholesale|retail|special|mrp|other","page":0,"confidence":0.95,"promotion":"visible offer or empty","bbox":[0,0,0,0],"evidence":"short exact source context"}]}
 
 Rules:
 - Include only products whose current price is explicitly present.
