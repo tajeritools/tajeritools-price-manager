@@ -870,7 +870,7 @@ fun analyzePdfAnySizeWithGemini(apiKey: String, fileName: String, file: File): S
         put("products", JSONArray())
     }
     val mergedProducts = merged.getJSONArray("products")
-    val tempDir = File(file.parentFile ?: file.parentFile, "ai_chunks").apply { mkdirs() }
+    val tempDir = File(file.parentFile ?: File("."), "ai_chunks").apply { mkdirs() }
 
     PDDocument.load(file).use { source ->
         var start = 0
