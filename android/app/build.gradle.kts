@@ -12,8 +12,8 @@ android {
         applicationId = "ir.tajeritools.pricemanager"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "1.5.0"
+        versionCode = 9
+        versionName = "1.6.0"
     }
 
     compileOptions {
