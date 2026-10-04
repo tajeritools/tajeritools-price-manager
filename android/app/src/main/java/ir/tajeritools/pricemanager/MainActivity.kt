@@ -46,6 +46,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 import java.text.DecimalFormat
 import java.util.Locale
 import kotlin.math.ceil
@@ -70,6 +71,16 @@ data class ProductLine(
     val sourcePrice: Double = rawPrice,
     val priceUnit: String = "toman",
     val priceType: String = "list"
+)
+
+data class SitePricePreview(
+    val product: ProductLine,
+    val finalPrice: Double,
+    val wooId: Long?,
+    val wooName: String?,
+    val currentPrice: Double?,
+    val matched: Boolean,
+    val error: String? = null
 )
 
 class MainActivity : ComponentActivity() {
@@ -122,7 +133,7 @@ fun App() {
             modifier = Modifier.padding(16.dp)
         )
         TabRow(selectedTabIndex = tab) {
-            listOf("جستجو", "فایل‌ها", "فرمول", "PDF", "AI").forEachIndexed { i, t ->
+            listOf("جستجو", "فایل‌ها", "فرمول", "PDF", "سایت", "AI").forEachIndexed { i, t ->
                 Tab(selected = tab == i, onClick = { tab = i }, text = { Text(t) })
             }
         }
@@ -163,7 +174,12 @@ fun App() {
                 message = if (product.isBlank()) "فرمول پیش‌فرض $brand ذخیره شد." else "فرمول $brand / $product ذخیره شد."
             }
             3 -> PdfScreen(docs, formulas)
-            4 -> AiScreen(
+            4 -> SiteSyncScreen(
+                docs = docs,
+                formulas = formulas,
+                onMessage = { message = it }
+            )
+            5 -> AiScreen(
                 apiKey = apiKey,
                 onSave = {
                     apiKey = it.trim()
@@ -445,6 +461,115 @@ fun FormulaScreen(
             Text("$label : $f", modifier = Modifier.padding(vertical = 5.dp))
         }
         Spacer(Modifier.height(40.dp))
+    }
+}
+
+@Composable
+fun SiteSyncScreen(
+    docs: List<DocItem>,
+    formulas: Map<String, String>,
+    onMessage: (String) -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    var siteUrl by remember { mutableStateOf("https://tajeritools.ir") }
+    var consumerKey by remember { mutableStateOf("") }
+    var consumerSecret by remember { mutableStateOf("") }
+    var brandFilter by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var confirmed by remember { mutableStateOf(false) }
+    var previews by remember { mutableStateOf<List<SitePricePreview>>(emptyList()) }
+
+    val products = remember(docs, formulas, brandFilter) {
+        docs.flatMap(::extractProducts)
+            .filter { p ->
+                p.code?.isNotBlank() == true &&
+                formulaForProduct(formulas, p) != null &&
+                (brandFilter.isBlank() || normalize(p.brand).contains(normalize(brandFilter)))
+            }
+            .distinctBy { "${it.brand}|${it.code}" }
+    }
+
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp)
+    ) {
+        Text("اتصال به سایت WooCommerce", style = MaterialTheme.typography.titleLarge)
+        Text("تطبیق فقط با SKU/کد مدل انجام می‌شود و قبل از تغییر قیمت، پیش‌نمایش می‌بینی.", style = MaterialTheme.typography.bodySmall)
+        Spacer(Modifier.height(10.dp))
+
+        OutlinedTextField(siteUrl, { siteUrl = it }, label = { Text("آدرس سایت") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(consumerKey, { consumerKey = it }, label = { Text("WooCommerce Consumer Key") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(consumerSecret, { consumerSecret = it }, label = { Text("WooCommerce Consumer Secret") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        Text("کلیدها فقط در حافظه همین اجرای برنامه نگه داشته می‌شوند.", style = MaterialTheme.typography.bodySmall)
+
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(brandFilter, { brandFilter = it }, label = { Text("فیلتر برند (اختیاری)") }, modifier = Modifier.fillMaxWidth())
+
+        Spacer(Modifier.height(8.dp))
+        Button(
+            enabled = !busy && consumerKey.isNotBlank() && consumerSecret.isNotBlank(),
+            onClick = {
+                scope.launch {
+                    busy = true
+                    confirmed = false
+                    previews = runCatching {
+                        buildWooPricePreview(siteUrl, consumerKey, consumerSecret, products, formulas)
+                    }.getOrElse {
+                        onMessage("خطا در پیش‌نمایش سایت: ${it.message}")
+                        emptyList()
+                    }
+                    busy = false
+                }
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) { Text(if (busy) "در حال بررسی…" else "تست اتصال و ساخت پیش‌نمایش") }
+
+        if (previews.isNotEmpty()) {
+            Spacer(Modifier.height(12.dp))
+            Text("پیدا شد: ${previews.count { it.matched }} • پیدا نشد: ${previews.count { !it.matched }}")
+
+            previews.take(30).forEach { p ->
+                Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                    Column(Modifier.padding(10.dp)) {
+                        Text("${p.product.name} • ${p.product.code.orEmpty()}")
+                        Text("قیمت نهایی برنامه: ${formatPrice(p.finalPrice)} تومان")
+                        if (p.matched) {
+                            Text("سایت: ${p.wooName.orEmpty()}")
+                            Text("قیمت فعلی: ${p.currentPrice?.let(::formatPrice) ?: "نامشخص"}")
+                        } else {
+                            Text("با این SKU در سایت پیدا نشد.", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(checked = confirmed, onCheckedChange = { confirmed = it })
+                Text("پیش‌نمایش را بررسی کردم و تغییر قیمت‌ها را تأیید می‌کنم.")
+            }
+
+            Button(
+                enabled = confirmed && !busy && previews.any { it.matched },
+                onClick = {
+                    scope.launch {
+                        busy = true
+                        runCatching {
+                            pushWooPrices(siteUrl, consumerKey, consumerSecret, previews.filter { it.matched })
+                        }.onSuccess { count ->
+                            onMessage("$count قیمت روی سایت بروزرسانی شد.")
+                            confirmed = false
+                        }.onFailure {
+                            onMessage("خطا در ارسال قیمت‌ها: ${it.message}")
+                        }
+                        busy = false
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("ارسال قیمت‌های تأییدشده به سایت") }
+        }
+
+        Spacer(Modifier.height(30.dp))
     }
 }
 
@@ -1171,6 +1296,112 @@ fun normalize(value: String): String {
 fun parseNumber(value: String): Double? {
     val n = normalize(value).replace("٬", "").replace(",", "").replace("/", "")
     return Regex("\\d+(?:\\.\\d+)?").find(n)?.value?.toDoubleOrNull()
+}
+
+
+fun wooAuthHeader(consumerKey: String, consumerSecret: String): String {
+    val raw = "$consumerKey:$consumerSecret"
+    return "Basic " + Base64.encodeToString(raw.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+}
+
+fun normalizedSiteBase(siteUrl: String): String {
+    val trimmed = siteUrl.trim().trimEnd('/')
+    require(trimmed.startsWith("https://")) { "آدرس سایت باید HTTPS باشد" }
+    return trimmed
+}
+
+fun wooRequest(
+    method: String,
+    url: String,
+    consumerKey: String,
+    consumerSecret: String,
+    body: JSONObject? = null
+): String {
+    val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+        requestMethod = method
+        connectTimeout = 20_000
+        readTimeout = 30_000
+        setRequestProperty("Authorization", wooAuthHeader(consumerKey, consumerSecret))
+        setRequestProperty("Accept", "application/json")
+        if (body != null) {
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json; charset=utf-8")
+        }
+    }
+    if (body != null) {
+        connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+    }
+    val code = connection.responseCode
+    val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+    val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+    require(code in 200..299) { "WooCommerce HTTP $code: ${text.take(300)}" }
+    return text
+}
+
+suspend fun buildWooPricePreview(
+    siteUrl: String,
+    consumerKey: String,
+    consumerSecret: String,
+    products: List<ProductLine>,
+    formulas: Map<String, String>
+): List<SitePricePreview> = withContext(Dispatchers.IO) {
+    val base = normalizedSiteBase(siteUrl)
+    val out = mutableListOf<SitePricePreview>()
+
+    for (product in products) {
+        val code = product.code?.trim().orEmpty()
+        if (code.isBlank()) continue
+        val formula = formulaForProduct(formulas, product) ?: continue
+        val finalPrice = runCatching { applyFormula(product.rawPrice, formula) }.getOrNull() ?: continue
+
+        val sku = URLEncoder.encode(code, "UTF-8")
+        val response = runCatching {
+            wooRequest("GET", "$base/wp-json/wc/v3/products?sku=$sku&per_page=10", consumerKey, consumerSecret)
+        }
+
+        if (response.isFailure) {
+            out += SitePricePreview(product, finalPrice, null, null, null, false, response.exceptionOrNull()?.message)
+            continue
+        }
+
+        val arr = JSONArray(response.getOrThrow())
+        val exact = (0 until arr.length())
+            .map { arr.getJSONObject(it) }
+            .firstOrNull { normalize(it.optString("sku")) == normalize(code) }
+
+        if (exact == null) {
+            out += SitePricePreview(product, finalPrice, null, null, null, false)
+        } else {
+            val current = exact.optString("regular_price").toDoubleOrNull()
+                ?: exact.optString("price").toDoubleOrNull()
+            out += SitePricePreview(
+                product = product,
+                finalPrice = finalPrice,
+                wooId = exact.optLong("id"),
+                wooName = exact.optString("name"),
+                currentPrice = current,
+                matched = true
+            )
+        }
+    }
+    out
+}
+
+suspend fun pushWooPrices(
+    siteUrl: String,
+    consumerKey: String,
+    consumerSecret: String,
+    previews: List<SitePricePreview>
+): Int = withContext(Dispatchers.IO) {
+    val base = normalizedSiteBase(siteUrl)
+    var updated = 0
+    for (item in previews) {
+        val id = item.wooId ?: continue
+        val body = JSONObject().put("regular_price", item.finalPrice.roundToLong().toString())
+        wooRequest("PUT", "$base/wp-json/wc/v3/products/$id", consumerKey, consumerSecret, body)
+        updated++
+    }
+    updated
 }
 
 fun normalizePriceUnit(value: String): String {
