@@ -75,4 +75,48 @@ class PricingEngineTest {
         assertEquals("5951", rows.first().code)
         assertTrue(rows.first().name.contains("جارو"))
     }
+    @Test
+    fun arvaMultilineRowKeepsCodeNameAndPriceTogether() {
+        val text = """
+            1405/06/20 349/999/000 1
+            دستگاه جوشکاری
+            اینورتر
+            ARC 215 IGBT
+            2101
+            1405/06/20 369/999/000 1
+            دستگاه جوشکاری
+            اینورتر
+            ARC 220 IGBT
+            2102
+        """.trimIndent()
+        val rows = extractProductsFromTextBlocks("Arva", text, "arva.pdf")
+        assertEquals(2, rows.size)
+        assertEquals("2101", rows[0].code)
+        assertEquals(349_999_000.0, rows[0].rawPrice, 0.5)
+        assertTrue(rows[0].name.contains("ARC 215 IGBT"))
+        assertEquals("2102", rows[1].code)
+        assertEquals(369_999_000.0, rows[1].rawPrice, 0.5)
+    }
+
+    @Test
+    fun arvaInlineRowKeepsDrillModelAndPriceTogether() {
+        val text = """
+            دريل 500 وات 10 66/999/000 1405/06/20
+            5303 10 ميليمتری اتومات
+            1405/06/20 85/999/000 8
+            دريل چکشی
+            850 وات
+            13 ميليمتری
+            5304
+        """.trimIndent()
+        val rows = extractProductsFromTextBlocks("Arva", text, "arva.pdf")
+        assertEquals(2, rows.size)
+        assertEquals("5303", rows[0].code)
+        assertEquals(66_999_000.0, rows[0].rawPrice, 0.5)
+        assertTrue(rows[0].name.contains("دريل"))
+        assertEquals("5304", rows[1].code)
+        assertEquals(85_999_000.0, rows[1].rawPrice, 0.5)
+        assertTrue(rows[1].name.contains("850"))
+    }
+
 }
