@@ -199,12 +199,26 @@ fun App() {
                     saveDocs(context, docs)
                 }
             )
-            3 -> FormulaScreen(formulas) { brand, product, formula ->
-                val key = pricingRuleKey(brand, product)
-                formulas = formulas.toMutableMap().apply { put(key, formula) }
-                saveFormulas(context, formulas)
-                message = if (product.isBlank()) "فرمول پیش‌فرض $brand ذخیره شد." else "فرمول $brand / $product ذخیره شد."
-            }
+            3 -> FormulaScreen(
+                formulas = formulas,
+                onSave = { brand, product, formula ->
+                    val key = pricingRuleKey(brand, product)
+                    formulas = formulas.toMutableMap().apply { put(key, formula) }
+                    saveFormulas(context, formulas)
+                    message = if (product.isBlank()) "فرمول پیش‌فرض $brand ذخیره شد." else "فرمول $brand / $product ذخیره شد."
+                },
+                onDelete = { key ->
+                    val removedLabel = key.replace("||", " / ").trim().trimEnd('/')
+                    formulas = formulas.toMutableMap().apply { remove(key) }
+                    saveFormulas(context, formulas)
+                    message = "فرمول $removedLabel حذف شد."
+                },
+                onDeleteAll = {
+                    formulas = emptyMap()
+                    saveFormulas(context, formulas)
+                    message = "همه فرمول‌ها حذف شدند."
+                }
+            )
             4 -> PdfScreen(docs, formulas)
             5 -> OnlineSourceScreen(
                 apiKey = apiKey,
@@ -328,7 +342,9 @@ fun FilesScreen(
 @Composable
 fun FormulaScreen(
     formulas: Map<String, String>,
-    onSave: (String, String, String) -> Unit
+    onSave: (String, String, String) -> Unit,
+    onDelete: (String) -> Unit,
+    onDeleteAll: () -> Unit
 ) {
     var brand by remember { mutableStateOf("") }
     var product by remember { mutableStateOf("") }
@@ -496,11 +512,47 @@ fun FormulaScreen(
 
         Spacer(Modifier.height(14.dp))
         Divider()
-        Text("فرمول‌های ذخیره‌شده", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 10.dp))
-        formulas.forEach { (k, f) ->
-            val parts = k.split("||", limit = 2)
-            val label = if (parts.size == 2 && parts[1].isNotBlank()) "${parts[0]} / ${parts[1]}" else parts[0]
-            Text("$label : $f", modifier = Modifier.padding(vertical = 5.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("فرمول‌های ذخیره‌شده", style = MaterialTheme.typography.titleMedium)
+            if (formulas.isNotEmpty()) {
+                TextButton(onClick = onDeleteAll) {
+                    Text("حذف همه")
+                }
+            }
+        }
+
+        if (formulas.isEmpty()) {
+            Text(
+                "هنوز فرمولی ذخیره نشده است.",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(vertical = 10.dp)
+            )
+        } else {
+            formulas.forEach { (k, f) ->
+                val parts = k.split("||", limit = 2)
+                val label = if (parts.size == 2 && parts[1].isNotBlank()) "${parts[0]} / ${parts[1]}" else parts[0]
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(label, style = MaterialTheme.typography.titleSmall)
+                            Text(f, style = MaterialTheme.typography.bodySmall)
+                        }
+                        TextButton(onClick = { onDelete(k) }) {
+                            Text("حذف")
+                        }
+                    }
+                }
+            }
         }
         Spacer(Modifier.height(40.dp))
     }
