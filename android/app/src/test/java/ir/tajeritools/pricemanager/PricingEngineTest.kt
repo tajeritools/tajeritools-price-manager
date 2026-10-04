@@ -200,4 +200,28 @@ class PricingEngineTest {
         assertTrue(brands.containsAll(listOf("Ronix", "Tosan", "Anchor", "Arva", "Nova")))
     }
 
+    @Test
+    fun catalogSearchMatchesNameModelAndBrand() {
+        val doc = DocItem("d", "Arva", "arva.pdf", "", "application/pdf", "")
+        val entry = CatalogEntry(
+            doc = doc,
+            product = ProductLine("Arva", "دریل چکشی 850 وات", "5304", 8_599_900.0, "test")
+        )
+        assertTrue(catalogMatches(entry, "دریل"))
+        assertTrue(catalogMatches(entry, "5304"))
+        assertTrue(catalogMatches(entry, "Arva"))
+        assertFalse(catalogMatches(entry, "اره زنجیری"))
+    }
+
+    @Test
+    fun catalogEntryReadsPagePromotionAndBoundingBoxFromAiJson() {
+        val ai = """{"brand":"Arva","products":[{"name":"دریل چکشی 850 وات","code":"5304","price":85999000,"price_unit":"rial","price_type":"list","page":5,"confidence":0.98,"promotion":"7+1","bbox":[100,50,260,950],"evidence":"row"}]}"""
+        val doc = DocItem("d", "Arva", "arva.pdf", "", "application/pdf", "", ai)
+        val entries = buildCatalogEntries(listOf(doc))
+        assertEquals(1, entries.size)
+        assertEquals(5, entries.first().page)
+        assertEquals("7+1", entries.first().promotion)
+        assertEquals(listOf(100, 50, 260, 950), entries.first().bbox!!.toList())
+    }
+
 }
