@@ -122,16 +122,17 @@ class PricingEngineTest {
     @Test
     fun ronixSingleLineTableKeepsIdentityAndPrice() {
         val text = """
+            آخرین بروزرسانی قیمت(ریال) تعداد شرح کد کالا
             1405/02/15 56,980,000 1 12 دریل 6/5 میلی متری معمولی سه نظام آچاری 400وات B2106
             1405/02/15 59,980,000 1 12 دریل 6/5 میلی متری معمولی سه نظام اتوماتیک 400وات C2106
         """.trimIndent()
         val rows = extractProductsFromTextBlocks("Ronix", text, "ronix.pdf")
         assertEquals(2, rows.size)
         assertEquals("B2106", rows[0].code)
-        assertEquals(56_980_000.0, rows[0].rawPrice, 0.5)
+        assertEquals(5_698_000.0, rows[0].rawPrice, 0.5)
         assertTrue(rows[0].name.contains("دریل"))
         assertEquals("C2106", rows[1].code)
-        assertEquals(59_980_000.0, rows[1].rawPrice, 0.5)
+        assertEquals(5_998_000.0, rows[1].rawPrice, 0.5)
     }
 
     @Test
@@ -143,6 +144,7 @@ class PricingEngineTest {
     @Test
     fun novaCodeFirstBlockKeepsNameCodeAndPrice() {
         val text = """
+            قیمت (ریال)
             ۵۵۱۰
             دریل پیچ گوشتی شارژی ۱۰
             میلیمتری ۱۶ولت
@@ -164,10 +166,24 @@ class PricingEngineTest {
         val rows = extractProductsFromCodeFirstBlocks("Nova", text, "nova.pdf")
         assertEquals(2, rows.size)
         assertEquals("5510", rows[0].code)
-        assertEquals(169_980_000.0, rows[0].rawPrice, 0.5)
+        assertEquals(16_998_000.0, rows[0].rawPrice, 0.5)
         assertTrue(rows[0].name.contains("دریل"))
         assertEquals("5515", rows[1].code)
-        assertEquals(179_980_000.0, rows[1].rawPrice, 0.5)
+        assertEquals(17_998_000.0, rows[1].rawPrice, 0.5)
+    }
+
+    @Test
+    fun currencyDetectionPreventsTenTimesPricingError() {
+        assertEquals("rial", detectPriceUnit("قیمت (ریال)"))
+        assertEquals("toman", detectPriceUnit("تمامی قیمت ها به تومان میباشد"))
+        assertEquals(5_698_000.0, priceToToman(56_980_000.0, "rial"), 0.5)
+        assertEquals(3_299_000.0, priceToToman(3_299_000.0, "toman"), 0.5)
+    }
+
+    @Test
+    fun unknownCurrencyIsExplicitlyMarkedUnknown() {
+        assertEquals("unknown", detectPriceUnit("PRICE LIST"))
+        assertEquals("واحد نامشخص", unitLabel("unknown"))
     }
 
 }
