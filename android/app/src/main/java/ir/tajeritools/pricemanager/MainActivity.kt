@@ -153,7 +153,7 @@ fun App() {
             edgePadding = 8.dp,
             modifier = Modifier.fillMaxWidth()
         ) {
-            listOf("جستجو", "کاتالوگ", "فایل‌ها", "فرمول", "PDF", "آنلاین", "سایت", "Paddle", "AI").forEachIndexed { i, t ->
+            listOf("جستجو", "کاتالوگ", "فایل‌ها", "فرمول", "PDF", "آنلاین", "سایت", "مجوز", "Paddle", "AI").forEachIndexed { i, t ->
                 Tab(
                     selected = tab == i,
                     onClick = { tab = i },
@@ -234,8 +234,9 @@ fun App() {
                 formulas = formulas,
                 onMessage = { message = it }
             )
-            7 -> PaddleScreen()
-            8 -> AiScreen(
+            7 -> LicenseScreen()
+            8 -> PaddleScreen()
+            9 -> AiScreen(
                 apiKey = apiKey,
                 onSave = {
                     apiKey = it.trim()
@@ -756,7 +757,7 @@ fun AiScreen(apiKey: String, onSave: (String) -> Unit) {
             Text("ذخیره تنظیمات AI")
         }
         Spacer(Modifier.height(8.dp))
-        Text(if (key.isBlank()) "AI غیرفعال است؛ تشخیص محلی برند و استخراج معمولی انجام می‌شود." else "AI فعال است. مدل: gemini-3.8-flash")
+        Text(if (key.isBlank()) "Gemini شخصی غیرفعال است؛ AI ابری مجوزدار و Paddle همچنان مستقل کار می‌کنند." else "Gemini شخصی فعال است. مدل: gemini-3.8-flash")
     }
 }
 
@@ -838,6 +839,7 @@ suspend fun importDocument(context: Context, uri: Uri, brandOverride: String, ap
     val isPdf = mime == "application/pdf" || name.endsWith(".pdf", true)
     val isImage = mime.startsWith("image/")
     val paddleUrl = loadPaddleServerUrl(context)
+    val cloudToken = loadLicenseToken(context)
 
     val embeddedText = when {
         isPdf -> runCatching { extractPdfText(outFile) }.getOrDefault("")
@@ -850,7 +852,37 @@ suspend fun importDocument(context: Context, uri: Uri, brandOverride: String, ap
 
     val initialBrand = brandOverride.ifBlank { detectBrand("$name\n$embeddedText") }
 
-    val paddle = if (paddleUrl.isNotBlank() && (isPdf || isImage)) {
+    // New cloud path: Mistral Document AI on TajeriTools server, with Gemini cloud fallback.
+    // It needs no PC and the provider keys never live inside the APK.
+    val cloudJson = if (cloudToken.isNotBlank() && (isPdf || isImage)) {
+        runCatching {
+            if (isPdf) {
+                analyzePdfAnySizeWithGateway(
+                    token = cloudToken,
+                    fileName = name,
+                    file = outFile,
+                    brandHint = initialBrand
+                )
+            } else {
+                analyzeImageWithGateway(
+                    token = cloudToken,
+                    fileName = name,
+                    file = outFile,
+                    mimeType = mime,
+                    brandHint = initialBrand
+                )
+            }
+        }.getOrDefault("")
+    } else ""
+
+    val cloudRows = if (cloudJson.isNotBlank()) {
+        runCatching {
+            JSONObject(cloudJson).optJSONArray("products")?.length() ?: 0
+        }.getOrDefault(0)
+    } else 0
+
+    // Existing PaddleOCR-VL path remains intact as the next fallback.
+    val paddle = if (cloudRows == 0 && paddleUrl.isNotBlank() && (isPdf || isImage)) {
         runCatching {
             if (isPdf) {
                 analyzePdfWithPaddleServer(
@@ -889,7 +921,9 @@ suspend fun importDocument(context: Context, uri: Uri, brandOverride: String, ap
         }.getOrDefault(0)
     } else 0
 
+    // Existing direct Gemini path also remains available for the owner's personal API key.
     val aiJson = when {
+        cloudRows > 0 -> cloudJson
         paddleRows > 0 -> paddleJson
         apiKey.isNotBlank() && isPdf ->
             runCatching { analyzePdfAnySizeWithGemini(apiKey, name, outFile) }.getOrDefault("")
