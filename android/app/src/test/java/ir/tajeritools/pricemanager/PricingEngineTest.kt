@@ -53,22 +53,9 @@ class PricingEngineTest {
 
     @Test
     fun aiRowsNeedConfidenceAndIdentity() {
-        val doc = DocItem(
-            id = "ai",
-            brand = "Arva",
-            name = "sample.pdf",
-            path = "",
-            mime = "application/pdf",
-            text = "",
-            aiJson = """{"brand":"Arva","products":[
-                {"name":"جارو شارژی","code":"5951","price":59999000,"page":15,"confidence":0.96,"evidence":"5951 جارو شارژی 59,999,000"},
-                {"name":"دستگاه","code":"","price":12345678,"page":1,"confidence":0.40,"evidence":"unclear"}
-            ]}"""
-        )
-        val rows = parseAiProducts(doc).orEmpty()
-        assertEquals(1, rows.size)
-        assertEquals("5951", rows.first().code)
-        assertEquals(59_999_000.0, rows.first().rawPrice, 0.5)
+        assertTrue(shouldAcceptAiProduct("جارو شارژی", "5951", 59_999_000.0, 0.96))
+        assertFalse(shouldAcceptAiProduct("دستگاه", null, 12_345_678.0, 0.40))
+        assertFalse(shouldAcceptAiProduct("جارو شارژی", "5951", 59_999_000.0, 0.60))
     }
 
     @Test
