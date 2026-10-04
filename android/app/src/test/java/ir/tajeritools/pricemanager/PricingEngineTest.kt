@@ -186,4 +186,18 @@ class PricingEngineTest {
         assertEquals("واحد نامشخص", unitLabel("unknown"))
     }
 
+    @Test
+    fun trustedOnlineSourceRejectsLookalikeDomains() {
+        val ronix = defaultTrustedSources().first { it.brand == "Ronix" }
+        assertTrue(isTrustedUrl("https://www.ronix.ir/products/", ronix))
+        assertFalse(isTrustedUrl("https://ronix.ir.evil.example/prices", ronix))
+        assertFalse(isTrustedUrl("http://example.com/ronix.ir", ronix))
+    }
+
+    @Test
+    fun officialSourcesAreConfiguredForCoreBrands() {
+        val brands = defaultTrustedSources().map { it.brand }.toSet()
+        assertTrue(brands.containsAll(listOf("Ronix", "Tosan", "Anchor", "Arva", "Nova")))
+    }
+
 }
