@@ -1,0 +1,35 @@
+name: Build iOS Simulator App
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - "ios/**"
+      - ".github/workflows/build-ios.yml"
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build iOS Simulator app
+        run: |
+          xcodebuild             -project ios/TajeriToolsPriceManager.xcodeproj             -scheme TajeriToolsPriceManager             -configuration Release             -sdk iphonesimulator             -destination 'generic/platform=iOS Simulator'             CODE_SIGNING_ALLOWED=NO             build
+
+      - name: Find app
+        run: |
+          APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -path "*/Build/Products/Release-iphonesimulator/TajeriToolsPriceManager.app" | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "App not found"
+            exit 1
+          fi
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" TajeriTools-Price-Manager-iOS-Simulator.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TajeriTools-Price-Manager-iOS-Simulator
+          path: TajeriTools-Price-Manager-iOS-Simulator.zip
+          if-no-files-found: error
+          retention-days: 90
