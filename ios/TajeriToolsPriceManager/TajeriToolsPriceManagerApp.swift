@@ -436,7 +436,7 @@ struct FormulaView: View {
                 Section("فرمول‌های ذخیره‌شده") {
                     ForEach(Array(store.state.formulas.keys.sorted()),id:\.self) { k in
                         HStack {
-                            Button(role:.destructive){store.state.formulas.removeValue(forKey:k);store.save()}{Image(systemName:"trash")}
+                            Button(role: .destructive, action: { store.state.formulas.removeValue(forKey: k); store.save() }) { Image(systemName: "trash") }
                             Spacer()
                             VStack(alignment:.trailing){Text(k.replacingOccurrences(of:"||",with:" / "));Text(store.state.formulas[k] ?? "").font(.caption)}
                         }
