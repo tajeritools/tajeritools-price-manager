@@ -973,7 +973,31 @@ fun parseNumber(value: String): Double? {
     return Regex("\\d+(?:\\.\\d+)?").find(n)?.value?.toDoubleOrNull()
 }
 
-fun pricingRuleKey(brand: String, product: String): String =\n    if (product.isBlank()) brand.trim() else "${brand.trim()}||${product.trim()}"\n\nfun formulaForProduct(formulas: Map<String, String>, product: ProductLine): String? {\n    val brandNorm = normalize(product.brand)\n    val codeNorm = normalize(product.code.orEmpty())\n    val nameNorm = normalize(product.name)\n    val specific = formulas.entries.mapNotNull { (key, formula) ->\n        val parts = key.split("||", limit = 2)\n        if (parts.size != 2 || normalize(parts[0]) != brandNorm) return@mapNotNull null\n        val target = normalize(parts[1])\n        if (target.isBlank()) return@mapNotNull null\n        val score = when {\n            codeNorm.isNotBlank() && target == codeNorm -> 1000 + target.length\n            codeNorm.isNotBlank() && codeNorm.contains(target) -> 800 + target.length\n            nameNorm == target -> 700 + target.length\n            nameNorm.contains(target) -> 500 + target.length\n            else -> 0\n        }\n        if (score > 0) score to formula else null\n    }.maxByOrNull { it.first }\n    return specific?.second ?: formulaForBrand(formulas, product.brand)\n}\n\nfun formulaForBrand(formulas: Map<String, String>, brand: String): String? {
+fun pricingRuleKey(brand: String, product: String): String =
+    if (product.isBlank()) brand.trim() else "${brand.trim()}||${product.trim()}"
+
+fun formulaForProduct(formulas: Map<String, String>, product: ProductLine): String? {
+    val brandNorm = normalize(product.brand)
+    val codeNorm = normalize(product.code.orEmpty())
+    val nameNorm = normalize(product.name)
+    val specific = formulas.entries.mapNotNull { (key, formula) ->
+        val parts = key.split("||", limit = 2)
+        if (parts.size != 2 || normalize(parts[0]) != brandNorm) return@mapNotNull null
+        val target = normalize(parts[1])
+        if (target.isBlank()) return@mapNotNull null
+        val score = when {
+            codeNorm.isNotBlank() && target == codeNorm -> 1000 + target.length
+            codeNorm.isNotBlank() && codeNorm.contains(target) -> 800 + target.length
+            nameNorm == target -> 700 + target.length
+            nameNorm.contains(target) -> 500 + target.length
+            else -> 0
+        }
+        if (score > 0) score to formula else null
+    }.maxByOrNull { it.first }
+    return specific?.second ?: formulaForBrand(formulas, product.brand)
+}
+
+fun formulaForBrand(formulas: Map<String, String>, brand: String): String? {
     formulas[brand]?.let { return it }
     val canonical = detectBrand(brand)
     return formulas.entries.firstOrNull { (k, _) -> !k.contains("||") && (normalize(k) == normalize(brand) || (canonical.isNotBlank() && detectBrand(k) == canonical)) }?.value
