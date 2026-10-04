@@ -721,63 +721,113 @@ fun cleanProductName(line: String, priceToken: String): String {
 }
 
 fun extractProducts(doc: DocItem): List<ProductLine> {
-    parseAiProducts(doc)?.filter { isMeaningfulProductName(it.name) }?.takeIf { it.isNotEmpty() }?.let { return it }
+    parseAiProducts(doc)?.takeIf { it.isNotEmpty() }?.let { return it }
 
-    val lines = doc.text.lines().map { it.replace(Regex("""\s+"""), " ").trim() }
+    val blockRows = extractProductsFromTextBlocks(doc.brand, doc.text, doc.name)
+    if (blockRows.isNotEmpty()) return blockRows
+
+    return emptyList()
+}
+
+fun extractProductsFromTextBlocks(brand: String, text: String, sourceName: String): List<ProductLine> {
+    val lines = text.lines()
+        .map { it.replace(Regex("""\s+"""), " ").trim() }
+        .filter { it.isNotBlank() }
+
+    val dateRegex = Regex("""(?:13|14|20)\d{2}[/.-]\d{1,2}[/.-]\d{1,2}""")
+    val priceRegex = Regex("""(?<!\w)([0-9۰-۹]{1,3}(?:[٬,/][0-9۰-۹]{3}){2,3}|[0-9۰-۹]{6,12})(?!\w)""")
+    val codeRegex = Regex("""\b(?:[A-Za-z]{1,8}[-_]?[0-9]{2,8}[A-Za-z0-9-]*|[0-9]{4,6}[A-Za-z]?)\b""")
+
+    data class Block(val start: Int, val endExclusive: Int)
+    val starts = lines.indices.filter { i ->
+        val line = normalize(lines[i])
+        priceRegex.containsMatchIn(line) && (
+            dateRegex.containsMatchIn(line) ||
+            Regex("""(?:قیمت|تومان|ریال|price)""", RegexOption.IGNORE_CASE).containsMatchIn(line) ||
+            line.count { it.isDigit() } >= 8
+        )
+    }
+
+    if (starts.isEmpty()) return emptyList()
+
+    val blocks = starts.mapIndexed { idx, s ->
+        Block(s, if (idx + 1 < starts.size) starts[idx + 1] else lines.size)
+    }
+
     val out = mutableListOf<ProductLine>()
-    val numberRegex = Regex("""(?<!\w)([0-9۰-۹][0-9۰-۹٬,./]{2,})(?!\w)""")
-    val dateRegex = Regex("""^(?:13|14|20)\d{2}[/.-]\d{1,2}[/.-]\d{1,2}$""")
-    val codeRegex = Regex("""\b(?:[A-Za-z]{1,10}[-_ ]?\d{1,10}[A-Za-z0-9-]*|\d{4,6}[A-Za-z]?)\b""")
+    for (block in blocks) {
+        val chunk = lines.subList(block.start, block.endExclusive).take(8)
+        if (chunk.isEmpty()) continue
 
-    for (index in lines.indices) {
-        val line = lines[index]
-        if (line.length < 4) continue
-
-        val candidates = numberRegex.findAll(line).mapNotNull { m ->
-            val token = normalize(m.value)
-            if (dateRegex.matches(token)) return@mapNotNull null
-            val value = parseNumber(token) ?: return@mapNotNull null
-            val digits = token.count(Char::isDigit)
-            if (value < 100_000 || digits < 6) return@mapNotNull null
-            var score = 0
-            if (token.contains(",") || token.contains("٬") || token.contains("/")) score += 3
-            if (digits >= 7) score += 3
-            if (Regex("""(?:قیمت|تومان|ریال|price)""", RegexOption.IGNORE_CASE).containsMatchIn(line)) score += 5
-            Triple(m, value, score)
+        val allText = chunk.joinToString(" ")
+        val priceCandidates = priceRegex.findAll(normalize(allText)).mapNotNull { m ->
+            val raw = m.value
+            val value = parseNumber(raw) ?: return@mapNotNull null
+            val digits = raw.count(Char::isDigit)
+            if (digits < 6 || value < 50_000) return@mapNotNull null
+            val score = when {
+                raw.contains("/") || raw.contains(",") || raw.contains("٬") -> 10
+                digits >= 8 -> 6
+                else -> 2
+            }
+            Triple(raw, value, score)
         }.toList()
 
-        val picked = candidates.maxWithOrNull(
-            compareBy<Triple<MatchResult, Double, Int>> { it.third }.thenBy { it.first.value.length }
+        val pickedPrice = priceCandidates.maxWithOrNull(
+            compareBy<Triple<String, Double, Int>> { it.third }.thenBy { it.first.length }
         ) ?: continue
+        val priceToken = pickedPrice.first
+        val price = pickedPrice.second
 
-        val priceMatch = picked.first
-        val price = picked.second
-        var name = repairProductName(cleanProductName(line, priceMatch.value))
+        val codeCandidates = codeRegex.findAll(normalize(allText))
+            .map { it.value.replace(" ", "") }
+            .filterNot { isLikelyYearCode(it) }
+            .filterNot { candidate ->
+                val n = parseNumber(candidate)
+                n != null && kotlin.math.abs(n - price) < 0.5
+            }
+            .toList()
 
-        // PDF tables sometimes separate the description from its price column.
-        // Only borrow an adjacent line when the current row has no usable product name.
-        if (!isMeaningfulProductName(name)) {
-            val adjacent = listOfNotNull(
-                lines.getOrNull(index - 1),
-                lines.getOrNull(index + 1)
-            ).map { cleanProductName(it, "") }
-             .firstOrNull { isMeaningfulProductName(it) }
-            if (adjacent != null) name = repairProductName(adjacent)
+        val code = codeCandidates
+            .sortedByDescending { candidate ->
+                var score = 0
+                if (candidate.any(Char::isLetter)) score += 20
+                if (candidate.length in 4..7) score += 10
+                if (chunk.any { normalize(it).trim() == normalize(candidate) }) score += 30
+                score
+            }
+            .firstOrNull()
+
+        val cleanedParts = chunk.map { rawLine ->
+            var s = rawLine
+            s = s.replace(dateRegex, " ")
+            s = s.replace(priceToken, " ")
+            if (!code.isNullOrBlank()) {
+                s = s.replace(Regex("""\b${Regex.escape(code)}\b""", RegexOption.IGNORE_CASE), " ")
+            }
+            s = s.replace(Regex("""https?://\S+|www\.\S+|\S+\.com\S*""", RegexOption.IGNORE_CASE), " ")
+            s = s.replace(Regex("""(?:آخرین\s*بروزرسانی|کد\s*کالا|تصویر\s*محصول|نام\s*کالا|تعداد\s*در\s*کارتن|قیمت)"""), " ")
+            s = s.replace(Regex("""\s+"""), " ").trim(' ', '-', ':', '،', '|')
+            s
+        }.filter { part ->
+            part.isNotBlank() &&
+                part.any(Char::isLetter) &&
+                !part.matches(Regex("""^\d{1,3}$"""))
         }
 
-        // A wrong name is worse than omitting the row from the customer-facing price list.
+        var name = repairProductName(cleanedParts.joinToString(" "))
+        name = name.replace(Regex("""\s+"""), " ").trim()
+
         if (!isMeaningfulProductName(name)) continue
+        if (code == null && name.length < 6) continue
 
-        val code = codeRegex.findAll("$name $line")
-            .map { it.value.replace(" ", "") }
-            .firstOrNull { candidate ->
-                if (isLikelyYearCode(candidate)) false else {
-                    val n = parseNumber(candidate)
-                    n == null || n < 100_000
-                }
-            }
-
-        out += ProductLine(doc.brand, name.take(160), code, price, line)
+        out += ProductLine(
+            brand = brand,
+            name = name.take(180),
+            code = code,
+            rawPrice = price,
+            source = "${sourceName} • بلوک ${block.start + 1}"
+        )
     }
 
     return out.distinctBy { "${it.brand}|${it.code}|${normalize(it.name)}|${it.rawPrice}" }
@@ -890,9 +940,6 @@ $clipped
 }
 
 fun analyzePdfAnySizeWithGemini(apiKey: String, fileName: String, file: File): String {
-    val inlineLimit = 32L * 1024L * 1024L
-    if (file.length() <= inlineLimit) return analyzePdfWithGemini(apiKey, fileName, file)
-
     val merged = JSONObject().apply {
         put("brand", "")
         put("products", JSONArray())
@@ -902,37 +949,64 @@ fun analyzePdfAnySizeWithGemini(apiKey: String, fileName: String, file: File): S
 
     PDDocument.load(file).use { source ->
         var start = 0
+        val pagesPerChunk = 4
         while (start < source.numberOfPages) {
-            val end = minOf(start + 8, source.numberOfPages)
+            val end = minOf(start + pagesPerChunk, source.numberOfPages)
             val chunkFile = File(tempDir, "chunk_${start}_${end}.pdf")
+
             PDDocument().use { chunk ->
-                for (i in start until end) {
-                    chunk.importPage(source.getPage(i))
-                }
+                for (i in start until end) chunk.importPage(source.getPage(i))
                 chunk.save(chunkFile)
             }
 
             val chunkJson = runCatching {
-                analyzePdfWithGemini(apiKey, "$fileName صفحات ${start + 1}-$end", chunkFile)
+                analyzePdfWithGemini(
+                    apiKey = apiKey,
+                    fileName = "$fileName | original pages ${start + 1}-$end",
+                    file = chunkFile,
+                    originalPageOffset = start
+                )
             }.getOrDefault("")
 
             if (chunkJson.isNotBlank()) {
                 runCatching {
                     val o = JSONObject(chunkJson)
-                    if (merged.optString("brand").isBlank()) merged.put("brand", o.optString("brand"))
+                    if (merged.optString("brand").isBlank()) {
+                        merged.put("brand", o.optString("brand"))
+                    }
                     val arr = o.optJSONArray("products") ?: JSONArray()
-                    for (i in 0 until arr.length()) mergedProducts.put(arr.getJSONObject(i))
+                    for (i in 0 until arr.length()) {
+                        val p = arr.getJSONObject(i)
+                        val page = p.optInt("page", 0)
+                        if (page in 1..pagesPerChunk) p.put("page", page + start)
+                        mergedProducts.put(p)
+                    }
                 }
             }
+
             chunkFile.delete()
             start = end
         }
     }
+
     tempDir.delete()
+
+    val seen = mutableSetOf<String>()
+    val deduped = JSONArray()
+    for (i in 0 until mergedProducts.length()) {
+        val p = mergedProducts.getJSONObject(i)
+        val key = listOf(
+            normalize(p.optString("code")),
+            normalize(p.optString("name")),
+            p.optDouble("price", -1.0).toLong().toString()
+        ).joinToString("|")
+        if (seen.add(key)) deduped.put(p)
+    }
+    merged.put("products", deduped)
     return merged.toString()
 }
 
-fun analyzePdfWithGemini(apiKey: String, fileName: String, file: File): String {
+fun analyzePdfWithGemini(apiKey: String, fileName: String, file: File, originalPageOffset: Int = 0): String {
     val prompt = """
 You analyze Iranian tool-store price-list PDFs.
 Return ONLY valid JSON:
@@ -945,13 +1019,12 @@ Rules:
 - Keep name/model/price from the SAME visual row or cell group; never pair adjacent products.
 - page is 1-based inside the provided PDF. confidence is 0..1. evidence must summarize the exact visual row.
 - Omit uncertain rows; missing a row is better than assigning a wrong price.
-Filename: $fileName
-""".trimIndent()
+Filename: $fileName\nOriginal PDF page offset: $originalPageOffset\nReturn page numbers relative to THIS chunk starting from 1.\n""".trimIndent()
     val encoded = Base64.encodeToString(file.readBytes(), Base64.NO_WRAP)
     val parts = JSONArray().put(JSONObject().put("text", prompt)).put(JSONObject().put("inlineData", JSONObject().put("mimeType", "application/pdf").put("data", encoded)))
     val request = JSONObject().apply {
         put("contents", JSONArray().put(JSONObject().put("parts", parts)))
-        put("generationConfig", JSONObject().put("responseMimeType", "application/json").put("temperature", 0.0))
+        put("generationConfig", JSONObject().put("responseMimeType", "application/json").put("temperature", 0.0).put("maxOutputTokens", 32768))
     }
     val connection = (URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent").openConnection() as HttpURLConnection).apply {
         requestMethod = "POST"; connectTimeout = 30000; readTimeout = 120000; doOutput = true
