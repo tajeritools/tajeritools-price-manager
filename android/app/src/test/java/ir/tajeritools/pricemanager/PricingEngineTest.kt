@@ -119,4 +119,55 @@ class PricingEngineTest {
         assertTrue(rows[1].name.contains("850"))
     }
 
+    @Test
+    fun ronixSingleLineTableKeepsIdentityAndPrice() {
+        val text = """
+            1405/02/15 56,980,000 1 12 دریل 6/5 میلی متری معمولی سه نظام آچاری 400وات B2106
+            1405/02/15 59,980,000 1 12 دریل 6/5 میلی متری معمولی سه نظام اتوماتیک 400وات C2106
+        """.trimIndent()
+        val rows = extractProductsFromTextBlocks("Ronix", text, "ronix.pdf")
+        assertEquals(2, rows.size)
+        assertEquals("B2106", rows[0].code)
+        assertEquals(56_980_000.0, rows[0].rawPrice, 0.5)
+        assertTrue(rows[0].name.contains("دریل"))
+        assertEquals("C2106", rows[1].code)
+        assertEquals(59_980_000.0, rows[1].rawPrice, 0.5)
+    }
+
+    @Test
+    fun novaBrokenPriceIsReconstructed() {
+        assertEquals(169_980_000.0, parseBrokenGroupedPrice("۱عدد /۰۰۰ /۹۸۰ ۱۶۹")!!, 0.5)
+        assertEquals(309_980_000.0, parseBrokenGroupedPrice("۱عدد /۰۰۰ /۹۸۰ ۳۰۹")!!, 0.5)
+    }
+
+    @Test
+    fun novaCodeFirstBlockKeepsNameCodeAndPrice() {
+        val text = """
+            ۵۵۱۰
+            دریل پیچ گوشتی شارژی ۱۰
+            میلیمتری ۱۶ولت
+            براشلس دو سرعته چکشی ۵۰
+            نیوتن متر، ۲ باتری
+            با کیف BMC
+            ۴
+            ست
+            ۱عدد /۰۰۰ /۹۸۰ ۱۶۹
+            ۵۵۱۵
+            پیچ گوشتی شارژی ۱۶ ولت
+            براشلس ضربه ای
+            سه سرعته ۱۵۰ نیوتن متر
+            ۲ باتری - با کیف BMC
+            ۴
+            ست
+            ۱عدد /۰۰۰ /۹۸۰ ۱۷۹
+        """.trimIndent()
+        val rows = extractProductsFromCodeFirstBlocks("Nova", text, "nova.pdf")
+        assertEquals(2, rows.size)
+        assertEquals("5510", rows[0].code)
+        assertEquals(169_980_000.0, rows[0].rawPrice, 0.5)
+        assertTrue(rows[0].name.contains("دریل"))
+        assertEquals("5515", rows[1].code)
+        assertEquals(179_980_000.0, rows[1].rawPrice, 0.5)
+    }
+
 }
