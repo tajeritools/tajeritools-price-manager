@@ -782,7 +782,7 @@ fun extractProductsFromTextBlocks(brand: String, text: String, sourceName: Strin
         val priceToken = pickedPrice.first
         val price = pickedPrice.second
 
-        val codeCandidates = codeRegex.findAll(normalize(allText))
+        val codeCandidates = codeRegex.findAll(allText)
             .map { it.value.replace(" ", "") }
             .filterNot { isLikelyYearCode(it) }
             .filterNot { candidate ->
