@@ -485,17 +485,18 @@ fun PdfScreen(docs: List<DocItem>, formulas: Map<String, String>) {
         Spacer(Modifier.height(8.dp))
         val rows = products.filter { it.brand == brand }
         Text("${rows.size} ردیف قیمت پیدا شد.")
-        Text("فرمول: ${formulaForBrand(formulas, brand) ?: "تنظیم نشده — ابتدا در تب فرمول ذخیره کنید"}")
+        val brandDefault = formulaForBrand(formulas, brand)
+        val specificCount = formulas.keys.count { key -> key.contains("||") && normalize(key.substringBefore("||")) == normalize(brand) }
+        Text(if (brandDefault != null) "فرمول پیش‌فرض برند + $specificCount قانون محصولی" else "$specificCount قانون محصولی؛ ردیف بدون قانون محاسبه نمی‌شود.")
         Spacer(Modifier.height(8.dp))
         Button(
             modifier = Modifier.fillMaxWidth(),
-            enabled = formulaForBrand(formulas, brand) != null,
+            enabled = rows.any { formulaForProduct(formulas, it) != null },
             onClick = {
-                val finalRows = rows.filter { isMeaningfulProductName(it.name) && !isLikelyYearCode(it.code.orEmpty()) }.map {
-                    val final = formulaForBrand(formulas, brand)?.let { f ->
-                        runCatching { applyFormula(it.rawPrice, f) }.getOrDefault(it.rawPrice)
-                    } ?: it.rawPrice
-                    it to final
+                val finalRows = rows.filter { isMeaningfulProductName(it.name) && !isLikelyYearCode(it.code.orEmpty()) }.mapNotNull { p ->
+                    val rule = formulaForProduct(formulas, p) ?: return@mapNotNull null
+                    val final = runCatching { applyFormula(p.rawPrice, rule) }.getOrNull() ?: return@mapNotNull null
+                    p to final
                 }
                 runCatching {
                     val file = makePricePdf(context, brand, finalRows)
@@ -511,7 +512,7 @@ fun PdfScreen(docs: List<DocItem>, formulas: Map<String, String>) {
         Spacer(Modifier.height(8.dp))
         LazyColumn {
             items(rows.take(50)) { p ->
-                val f = formulaForBrand(formulas, brand)
+                val f = formulaForProduct(formulas, p)
                 val steps = f?.let { runCatching { applyFormulaSteps(p.rawPrice, it) }.getOrNull() }
                 val final = steps?.lastOrNull()?.second ?: p.rawPrice
                 Column(Modifier.padding(vertical = 7.dp)) {
@@ -811,11 +812,19 @@ fun parseAiProducts(doc: DocItem): List<ProductLine>? {
             for (i in 0 until arr.length()) {
                 val p = arr.optJSONObject(i) ?: continue
                 val name = repairProductName(p.optString("name").trim())
-                val code = p.optString("code").trim()
-                    .takeIf { it.isNotBlank() && !isLikelyYearCode(it) }
+                val code = p.optString("code").trim().takeIf { it.isNotBlank() && !isLikelyYearCode(it) }
                 val price = p.optDouble("price", Double.NaN)
-                if (name.isNotBlank() && price.isFinite() && price >= 50_000) {
-                    add(ProductLine(brand, name, code, price, "AI: ${doc.name}"))
+                val confidence = p.optDouble("confidence", 0.0)
+                val page = p.optInt("page", 0)
+                val evidence = p.optString("evidence").trim()
+                val identityOk = isMeaningfulProductName(name) && (code != null || name.length >= 5)
+                if (identityOk && price.isFinite() && price >= 50_000 && confidence >= 0.72) {
+                    val src = buildString {
+                        append("AI: ${doc.name}")
+                        if (page > 0) append(" • صفحه $page")
+                        if (evidence.isNotBlank()) append(" • ${evidence.take(120)}")
+                    }
+                    add(ProductLine(brand, name, code, price, src))
                 }
             }
         }
@@ -827,13 +836,16 @@ fun analyzeWithGemini(apiKey: String, fileName: String, text: String): String {
     val prompt = """
 You analyze Iranian tool-store price lists.
 Return ONLY valid JSON with this exact shape:
-{"brand":"brand name","products":[{"name":"product name","code":"model/code or empty","price":123456}]}
+{"brand":"brand name","products":[{"name":"specific product name","code":"model/code or empty","price":123456,"page":1,"confidence":0.95,"evidence":"short row context"}]}
 
 Rules:
 - Detect brand from the filename and document text.
 - Extract only real product rows that contain a price in the supplied document.\n- Every returned product MUST include a specific product name; include its model/code whenever visible.\n- Never return a row whose only description is a date, quantity, page number, or generic placeholder.\n- Never invent a price, product, model, or brand.
 - Preserve the numeric price semantically; remove thousands separators only.
-- If uncertain about a row, omit it.
+- Keep each product tied to the SAME row/table cell group as its price. Never borrow a name from another row.
+- confidence must be 0..1; use high confidence only when name/model/price alignment is visually clear.
+- page is the 1-based page number and evidence is short row-level context.
+- If uncertain about identity or price alignment, omit the row.
 - Common brands include Ronix, Tosan, Anchor, Nova, Arva, Pukka, Vivarex.
 Filename: $fileName
 Document text:
@@ -874,7 +886,7 @@ $clipped
 }
 
 fun analyzePdfAnySizeWithGemini(apiKey: String, fileName: String, file: File): String {
-    val inlineLimit = 18L * 1024L * 1024L
+    val inlineLimit = 32L * 1024L * 1024L
     if (file.length() <= inlineLimit) return analyzePdfWithGemini(apiKey, fileName, file)
 
     val merged = JSONObject().apply {
@@ -887,7 +899,7 @@ fun analyzePdfAnySizeWithGemini(apiKey: String, fileName: String, file: File): S
     PDDocument.load(file).use { source ->
         var start = 0
         while (start < source.numberOfPages) {
-            val end = minOf(start + 4, source.numberOfPages)
+            val end = minOf(start + 8, source.numberOfPages)
             val chunkFile = File(tempDir, "chunk_${start}_${end}.pdf")
             PDDocument().use { chunk ->
                 for (i in start until end) {
@@ -920,13 +932,15 @@ fun analyzePdfWithGemini(apiKey: String, fileName: String, file: File): String {
     val prompt = """
 You analyze Iranian tool-store price-list PDFs.
 Return ONLY valid JSON:
-{"brand":"brand name","products":[{"name":"product name","code":"model/code or empty","price":123456}]}
+{"brand":"brand name","products":[{"name":"specific product name","code":"model/code or empty","price":123456,"page":1,"confidence":0.95,"evidence":"short row context"}]}
 Rules:
 - Read the PDF itself, including scanned pages and tables.
 - Extract only actual product sale-price rows.\n- Every returned row MUST contain the specific product name and model/code when visible in the table.\n- If the name/model cannot be tied confidently to the price, omit that row.\n- Never treat model codes, dates, page numbers, phone numbers, percentages or quantities as prices.
 - Never invent data.
 - Preserve the actual document price; remove separators only.
-- Omit uncertain rows.
+- Keep name/model/price from the SAME visual row or cell group; never pair adjacent products.
+- page is 1-based inside the provided PDF. confidence is 0..1. evidence must summarize the exact visual row.
+- Omit uncertain rows; missing a row is better than assigning a wrong price.
 Filename: $fileName
 """.trimIndent()
     val encoded = Base64.encodeToString(file.readBytes(), Base64.NO_WRAP)
