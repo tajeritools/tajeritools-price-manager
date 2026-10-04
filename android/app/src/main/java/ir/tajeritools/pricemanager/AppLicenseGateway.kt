@@ -374,8 +374,8 @@ fun LicenseScreen() {
 
         Spacer(Modifier.height(16.dp))
         Text("ترتیب هوش مصنوعی برنامه", style = MaterialTheme.typography.titleMedium)
-        Text("1) PaddleOCR‑VL قبلی، اگر سرور محلی‌اش تنظیم باشد")
-        Text("2) AI ابری TajeriTools با مجوز موبایل، بدون نیاز به کامپیوتر")
+        Text("1) AI ابری TajeriTools: Mistral Document AI، با Gemini 3.8 Flash به‌عنوان fallback سرور")
+        Text("2) PaddleOCR‑VL قبلی، اگر سرور محلی‌اش تنظیم باشد")
         Text("3) Gemini قبلی با API Key شخصی، اگر تنظیم باشد")
         Text("4) parser محلی برنامه")
     }
