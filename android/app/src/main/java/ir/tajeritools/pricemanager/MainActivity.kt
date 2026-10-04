@@ -17,6 +17,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
@@ -46,6 +48,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.text.DecimalFormat
 import java.util.Locale
+import kotlin.math.ceil
 import kotlin.math.roundToLong
 
 data class DocItem(
@@ -260,126 +263,167 @@ fun FormulaScreen(
     onSave: (String, String) -> Unit
 ) {
     var brand by remember { mutableStateOf("") }
-    var formula by remember { mutableStateOf("") }
-    var test by remember { mutableStateOf("10000000") }
-    var preview by remember { mutableStateOf("") }
-    var buyDiscount by remember { mutableStateOf("18") }
-    var markup by remember { mutableStateOf("10") }
-    var giftBuyQty by remember { mutableStateOf("0") }
-    var giftFreeQty by remember { mutableStateOf("0") }
+    var supplierDiscount by remember { mutableStateOf("18") }
+    var giftBuy by remember { mutableStateOf("0") }
+    var giftFree by remember { mutableStateOf("0") }
+    var extraCosts by remember { mutableStateOf("0") }
     var targetMargin by remember { mutableStateOf("10") }
+    var roundTo by remember { mutableStateOf("10000") }
+    var test by remember { mutableStateOf("20000000") }
+    var formula by remember { mutableStateOf("") }
+    var preview by remember { mutableStateOf("") }
 
-    Column(Modifier.fillMaxSize().padding(12.dp)) {
-        Text("فرمول‌ها مرحله‌به‌مرحله اجرا می‌شوند و خروجی آخر = قیمت نهایی")
-        Text("مثال: price-18%=gift(10,1)=price+10%")
+    fun buildProfessionalFormula(): String {
+        val d = supplierDiscount.toDoubleOrNull() ?: 0.0
+        val x = giftBuy.toIntOrNull() ?: 0
+        val y = giftFree.toIntOrNull() ?: 0
+        val costs = extraCosts.toDoubleOrNull() ?: 0.0
+        val margin = targetMargin.toDoubleOrNull() ?: 0.0
+        val rounding = roundTo.toLongOrNull() ?: 1L
+        val parts = mutableListOf<String>()
+        if (d > 0) parts += "discount(${trimNumber(d)})"
+        if (x > 0 && y > 0) parts += "gift($x,$y)"
+        if (costs > 0) parts += "cost(${trimNumber(costs)})"
+        if (margin > 0) parts += "margin(${trimNumber(margin)})"
+        if (rounding > 1) parts += "round($rounding)"
+        return parts.joinToString("=")
+    }
+
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(12.dp)
+    ) {
+        Text("قیمت‌گذاری حرفه‌ای", style = MaterialTheme.typography.titleLarge)
+        Text(
+            "قیمت لیست → تخفیف تأمین‌کننده → اشانتیون → هزینه جانبی → حاشیه سود هدف → گردکردن",
+            style = MaterialTheme.typography.bodySmall
+        )
+        Spacer(Modifier.height(10.dp))
+
+        OutlinedTextField(
+            brand, { brand = it },
+            label = { Text("برند") },
+            placeholder = { Text("مثلاً Arva") },
+            modifier = Modifier.fillMaxWidth()
+        )
         Spacer(Modifier.height(8.dp))
-        OutlinedTextField(brand, { brand = it }, label = { Text("برند") }, modifier = Modifier.fillMaxWidth())
-        Spacer(Modifier.height(8.dp))
 
-        Text("فرمول‌های آماده", style = MaterialTheme.typography.titleMedium)
-        Spacer(Modifier.height(6.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            OutlinedButton(
-                onClick = { formula = "price-18%=price+10%" },
-                modifier = Modifier.weight(1f)
-            ) { Text("قبلی: -18% +10%") }
-            OutlinedButton(
-                onClick = { formula = "price+10%" },
-                modifier = Modifier.weight(1f)
-            ) { Text("فقط +10%") }
-        }
-
-        Spacer(Modifier.height(12.dp))
-        Text("سازنده فرمول فروشگاهی", style = MaterialTheme.typography.titleMedium)
-        Text("قیمت لیست → تخفیف همکاری → اشانتیون → سود فروش", style = MaterialTheme.typography.bodySmall)
-        Spacer(Modifier.height(6.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             OutlinedTextField(
-                value = buyDiscount,
-                onValueChange = { buyDiscount = it.filter { ch -> ch.isDigit() || ch == '.' } },
+                supplierDiscount,
+                { supplierDiscount = it.filter { ch -> ch.isDigit() || ch == '.' } },
                 label = { Text("تخفیف خرید %") },
                 modifier = Modifier.weight(1f)
             )
             OutlinedTextField(
-                value = markup,
-                onValueChange = { markup = it.filter { ch -> ch.isDigit() || ch == '.' } },
-                label = { Text("سود روی خرید %") },
+                extraCosts,
+                { extraCosts = it.filter { ch -> ch.isDigit() || ch == '.' } },
+                label = { Text("هزینه جانبی %") },
                 modifier = Modifier.weight(1f)
             )
         }
-        Spacer(Modifier.height(6.dp))
+
+        Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             OutlinedTextField(
-                value = giftBuyQty,
-                onValueChange = { giftBuyQty = it.filter(Char::isDigit) },
-                label = { Text("خرید X عدد") },
+                giftBuy,
+                { giftBuy = it.filter(Char::isDigit) },
+                label = { Text("خرید X") },
                 modifier = Modifier.weight(1f)
             )
             OutlinedTextField(
-                value = giftFreeQty,
-                onValueChange = { giftFreeQty = it.filter(Char::isDigit) },
-                label = { Text("اشانتیون Y عدد") },
+                giftFree,
+                { giftFree = it.filter(Char::isDigit) },
+                label = { Text("اشانتیون Y") },
                 modifier = Modifier.weight(1f)
             )
         }
-        Text("اگر اشانتیون ندارد هر دو را صفر بگذار.", style = MaterialTheme.typography.bodySmall)
-        Spacer(Modifier.height(6.dp))
+        Text("مثال 10+1 یعنی خرید 10 عدد و دریافت 1 عدد رایگان.", style = MaterialTheme.typography.bodySmall)
+
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            OutlinedTextField(
+                targetMargin,
+                { targetMargin = it.filter { ch -> ch.isDigit() || ch == '.' } },
+                label = { Text("حاشیه سود هدف %") },
+                modifier = Modifier.weight(1f)
+            )
+            OutlinedTextField(
+                roundTo,
+                { roundTo = it.filter(Char::isDigit) },
+                label = { Text("گردکردن به") },
+                modifier = Modifier.weight(1f)
+            )
+        }
+
+        Spacer(Modifier.height(10.dp))
         Button(
             onClick = {
-                val d = buyDiscount.toDoubleOrNull() ?: 0.0
-                val m = markup.toDoubleOrNull() ?: 0.0
-                val x = giftBuyQty.toIntOrNull() ?: 0
-                val y = giftFreeQty.toIntOrNull() ?: 0
-                val parts = mutableListOf<String>()
-                if (d > 0.0) parts += "price-${trimNumber(d)}%"
-                if (x > 0 && y > 0) parts += "gift($x,$y)"
-                if (m > 0.0) parts += "price+${trimNumber(m)}%"
-                formula = parts.joinToString("=")
+                formula = buildProfessionalFormula()
+                preview = "فرمول ساخته شد: $formula"
             },
             modifier = Modifier.fillMaxWidth()
-        ) { Text("ساخت فرمول کامل") }
+        ) { Text("ساخت فرمول حرفه‌ای") }
 
-        Spacer(Modifier.height(12.dp))
-        Text("حاشیه سود هدف", style = MaterialTheme.typography.titleMedium)
-        Text("مثلاً حاشیه سود واقعی 10٪ با +10٪ یکی نیست.", style = MaterialTheme.typography.bodySmall)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(
-                value = targetMargin,
-                onValueChange = { targetMargin = it.filter { ch -> ch.isDigit() || ch == '.' } },
-                label = { Text("حاشیه سود %") },
-                modifier = Modifier.weight(1f)
-            )
-            Button(onClick = {
-                val margin = targetMargin.toDoubleOrNull()
-                if (margin != null && margin > 0.0 && margin < 100.0) {
-                    val divisor = 1.0 - margin / 100.0
-                    formula = "price/${"%.6f".format(Locale.US, divisor).trimEnd('0').trimEnd('.')}"
-                }
-            }) { Text("ساخت") }
-        }
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(
+            onClick = {
+                supplierDiscount = "18"
+                giftBuy = "0"
+                giftFree = "0"
+                extraCosts = "0"
+                targetMargin = "0"
+                roundTo = "1"
+                formula = "discount(18)=markup(10)"
+                preview = "فرمول قبلی: 18٪ تخفیف سپس 10٪ سود روی هزینه"
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) { Text("استفاده از فرمول قبلی (-18% سپس +10%)") }
 
-        Spacer(Modifier.height(12.dp))
-        OutlinedTextField(formula, { formula = it }, label = { Text("فرمول") }, modifier = Modifier.fillMaxWidth())
+        Spacer(Modifier.height(10.dp))
+        OutlinedTextField(
+            test,
+            { test = it.filter { ch -> ch.isDigit() || ch == '.' || ch == '/' || ch == ',' || ch == '٬' } },
+            label = { Text("قیمت آزمایشی") },
+            modifier = Modifier.fillMaxWidth()
+        )
+
         Spacer(Modifier.height(8.dp))
-        OutlinedTextField(test, { test = it.filter { ch -> ch.isDigit() || ch == '.' || ch == '/' || ch == ',' || ch == '٬' } }, label = { Text("قیمت آزمایشی") }, modifier = Modifier.fillMaxWidth())
-        Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = {
+        Button(
+            onClick = {
+                if (formula.isBlank()) formula = buildProfessionalFormula()
                 preview = runCatching {
                     val base = parseNumber(test) ?: error("قیمت نامعتبر")
                     val steps = applyFormulaSteps(base, formula)
-                    formatFormulaTrace(base, steps) + "\nقیمت نهایی: " + formatPrice(steps.last().second) + " تومان"
-                }.getOrElse { "فرمول نامعتبر" }
-            }) { Text("آزمایش") }
-            Button(onClick = {
-                if (brand.isNotBlank() && formula.isNotBlank()) onSave(brand.trim(), formula.trim())
-            }) { Text("ذخیره") }
+                    "قیمت لیست: ${formatPrice(base)} تومان\n" +
+                        formatFormulaTrace(base, steps) +
+                        "\nقیمت نهایی: ${formatPrice(steps.last().second)} تومان"
+                }.getOrElse { "خطا در فرمول: ${it.message}" }
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) { Text("تست محاسبه") }
+
+        if (preview.isNotBlank()) {
+            Text(preview, modifier = Modifier.padding(vertical = 10.dp))
         }
-        if (preview.isNotBlank()) Text(preview, modifier = Modifier.padding(vertical = 8.dp))
+
+        Button(
+            onClick = {
+                if (formula.isBlank()) formula = buildProfessionalFormula()
+                if (brand.isNotBlank() && formula.isNotBlank()) onSave(brand.trim(), formula)
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) { Text("ذخیره برای این برند") }
+
+        Spacer(Modifier.height(14.dp))
         Divider()
+        Text("فرمول‌های ذخیره‌شده", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 10.dp))
         formulas.forEach { (b, f) ->
             Text("$b : $f", modifier = Modifier.padding(vertical = 5.dp))
         }
+        Spacer(Modifier.height(40.dp))
     }
 }
 
@@ -403,7 +447,7 @@ fun AiScreen(apiKey: String, onSave: (String) -> Unit) {
             Text("ذخیره تنظیمات AI")
         }
         Spacer(Modifier.height(8.dp))
-        Text(if (key.isBlank()) "AI غیرفعال است؛ تشخیص محلی برند و استخراج معمولی انجام می‌شود." else "AI فعال است. مدل: gemini-3.5-flash")
+        Text(if (key.isBlank()) "AI غیرفعال است؛ تشخیص محلی برند و استخراج معمولی انجام می‌شود." else "AI فعال است. مدل: gemini-3.8-flash")
     }
 }
 
@@ -429,12 +473,13 @@ fun PdfScreen(docs: List<DocItem>, formulas: Map<String, String>) {
         Spacer(Modifier.height(8.dp))
         val rows = products.filter { it.brand == brand }
         Text("${rows.size} ردیف قیمت پیدا شد.")
-        Text("فرمول: ${formulaForBrand(formulas, brand) ?: "بدون فرمول"}")
+        Text("فرمول: ${formulaForBrand(formulas, brand) ?: "تنظیم نشده — ابتدا در تب فرمول ذخیره کنید"}")
         Spacer(Modifier.height(8.dp))
         Button(
             modifier = Modifier.fillMaxWidth(),
+            enabled = formulaForBrand(formulas, brand) != null,
             onClick = {
-                val finalRows = rows.filter { isMeaningfulProductName(it.name) }.map {
+                val finalRows = rows.filter { isMeaningfulProductName(it.name) && !isLikelyYearCode(it.code.orEmpty()) }.map {
                     val final = formulaForBrand(formulas, brand)?.let { f ->
                         runCatching { applyFormula(it.rawPrice, f) }.getOrDefault(it.rawPrice)
                     } ?: it.rawPrice
@@ -573,6 +618,71 @@ fun extractImageText(file: File): String {
     }
 }
 
+fun repairProductName(value: String): String {
+    val normalized = normalize(value)
+        .replace(Regex("""\s+"""), " ")
+        .trim()
+    val tokens = normalized.split(" ").filter { it.isNotBlank() }
+    val singleRatio = if (tokens.isEmpty()) 0.0 else tokens.count { it.length == 1 && it[0].isLetter() }.toDouble() / tokens.size
+    if (singleRatio < 0.55) return value.replace(Regex("""\s+"""), " ").trim()
+
+    val compact = tokens.joinToString("")
+    val known = listOf(
+        "دستگاهجوشکاری" to "دستگاه جوشکاری",
+        "دریلچکشی" to "دریل چکشی",
+        "دریلشارژیچکشی" to "دریل شارژی چکشی",
+        "دریلشارژی" to "دریل شارژی",
+        "پیچگوشتیبرقی" to "پیچ گوشتی برقی",
+        "فرزآهنگری" to "فرز آهنگری",
+        "فرزسنگبری" to "فرز سنگبری",
+        "مینفرز" to "مینی فرز",
+        "مینیفرز" to "مینی فرز",
+        "فرزحکاکی" to "فرز حکاکی",
+        "اورفرز" to "اور فرز",
+        "بتنکنشارژی" to "بتن کن شارژی",
+        "بتنکن" to "بتن کن",
+        "چکشتخریب" to "چکش تخریب",
+        "ارهگردبرشارژی" to "اره گردبر شارژی",
+        "ارهگردبر" to "اره گردبر",
+        "ارهعمودبر" to "اره عمودبر",
+        "ارهزنجیریشارژی" to "اره زنجیری شارژی",
+        "ارهزنجیریبنزینی" to "اره زنجیری بنزینی",
+        "فارسیبر" to "فارسی بر",
+        "پروفیلبر" to "پروفیل بر",
+        "سنبادهلرزان" to "سنباده لرزان",
+        "سشوارصنعتی" to "سشوار صنعتی",
+        "پیستولهبرقی" to "پیستوله برقی",
+        "بلوورشارژی" to "بلوور شارژی",
+        "بلوور" to "بلوور",
+        "دمندهبرقی" to "دمنده برقی",
+        "همزنبرقی" to "همزن برقی",
+        "شیارزن" to "شیارزن",
+        "کارواششارژی" to "کارواش شارژی",
+        "کارواشپرتابل" to "کارواش پرتابل",
+        "کارواش" to "کارواش",
+        "موتوربرقبنزینی" to "موتور برق بنزینی",
+        "کمپرسورباد" to "کمپرسور باد",
+        "کمپرسورفندکی" to "کمپرسور فندکی",
+        "میخکوببادی" to "میخ کوب بادی",
+        "منگنهکوببادی" to "منگنه کوب بادی",
+        "آچاربکسشارژی" to "آچار بکس شارژی",
+        "آچارجغجغهای" to "آچار جغجغه‌ای",
+        "قیچیباغبانیشارژی" to "قیچی باغبانی شارژی",
+        "جاروشارژی" to "جارو شارژی",
+        "ترازلیزری" to "تراز لیزری",
+        "مترلیزری" to "متر لیزری"
+    )
+    val hit = known.firstOrNull { compact.contains(it.first) }
+    return hit?.second ?: compact
+}
+
+fun isLikelyYearCode(value: String): Boolean {
+    val n = normalize(value).filter(Char::isDigit)
+    if (n.length != 4) return false
+    val y = n.toIntOrNull() ?: return false
+    return y in 1300..1500 || y in 2000..2100
+}
+
 fun isMeaningfulProductName(value: String): Boolean {
     val s = normalize(value)
         .replace(Regex("""(?:13|14|20)\d{2}[/.-]\d{1,2}[/.-]\d{1,2}"""), " ")
@@ -629,7 +739,7 @@ fun extractProducts(doc: DocItem): List<ProductLine> {
 
         val priceMatch = picked.first
         val price = picked.second
-        var name = cleanProductName(line, priceMatch.value)
+        var name = repairProductName(cleanProductName(line, priceMatch.value))
 
         // PDF tables sometimes separate the description from its price column.
         // Only borrow an adjacent line when the current row has no usable product name.
@@ -639,7 +749,7 @@ fun extractProducts(doc: DocItem): List<ProductLine> {
                 lines.getOrNull(index + 1)
             ).map { cleanProductName(it, "") }
              .firstOrNull { isMeaningfulProductName(it) }
-            if (adjacent != null) name = adjacent
+            if (adjacent != null) name = repairProductName(adjacent)
         }
 
         // A wrong name is worse than omitting the row from the customer-facing price list.
@@ -648,8 +758,10 @@ fun extractProducts(doc: DocItem): List<ProductLine> {
         val code = codeRegex.findAll("$name $line")
             .map { it.value.replace(" ", "") }
             .firstOrNull { candidate ->
-                val n = parseNumber(candidate)
-                n == null || n < 100_000
+                if (isLikelyYearCode(candidate)) false else {
+                    val n = parseNumber(candidate)
+                    n == null || n < 100_000
+                }
             }
 
         out += ProductLine(doc.brand, name.take(160), code, price, line)
@@ -686,8 +798,9 @@ fun parseAiProducts(doc: DocItem): List<ProductLine>? {
         buildList {
             for (i in 0 until arr.length()) {
                 val p = arr.optJSONObject(i) ?: continue
-                val name = p.optString("name").trim()
-                val code = p.optString("code").trim().ifBlank { null }
+                val name = repairProductName(p.optString("name").trim())
+                val code = p.optString("code").trim()
+                    .takeIf { it.isNotBlank() && !isLikelyYearCode(it) }
                 val price = p.optDouble("price", Double.NaN)
                 if (name.isNotBlank() && price.isFinite() && price >= 50_000) {
                     add(ProductLine(brand, name, code, price, "AI: ${doc.name}"))
@@ -725,7 +838,7 @@ $clipped
         })
     }
 
-    val connection = (URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent").openConnection() as HttpURLConnection).apply {
+    val connection = (URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent").openConnection() as HttpURLConnection).apply {
         requestMethod = "POST"
         connectTimeout = 20000
         readTimeout = 60000
@@ -767,7 +880,7 @@ Filename: $fileName
         put("contents", JSONArray().put(JSONObject().put("parts", parts)))
         put("generationConfig", JSONObject().put("responseMimeType", "application/json").put("temperature", 0.0))
     }
-    val connection = (URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent").openConnection() as HttpURLConnection).apply {
+    val connection = (URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent").openConnection() as HttpURLConnection).apply {
         requestMethod = "POST"; connectTimeout = 30000; readTimeout = 120000; doOutput = true
         setRequestProperty("Content-Type", "application/json")
         setRequestProperty("x-goog-api-key", apiKey)
@@ -806,37 +919,79 @@ fun applyFormulaSteps(input: Double, formula: String): List<Pair<String, Double>
     return buildList {
         for (token0 in tokens) {
             val token = token0.replace("قیمت", "price")
-            val gift = Regex("""gift\((\d+),(\d+)\)""").matchEntire(token)
-            if (gift != null) {
-                val buyQty = gift.groupValues[1].toInt()
-                val freeQty = gift.groupValues[2].toInt()
-                require(buyQty > 0 && freeQty > 0) { "تعداد اشانتیون نامعتبر است" }
-                value = value * buyQty.toDouble() / (buyQty + freeQty).toDouble()
+
+            Regex("""discount\(([0-9]+(?:\.[0-9]+)?)\)""").matchEntire(token)?.let { m ->
+                val pct = m.groupValues[1].toDouble()
+                require(pct in 0.0..99.99) { "تخفیف نامعتبر" }
+                value *= (1.0 - pct / 100.0)
+                add(("تخفیف ${trimNumber(pct)}٪") to value)
+                continue
+            }
+
+            Regex("""gift\((\d+),(\d+)\)""").matchEntire(token)?.let { m ->
+                val buyQty = m.groupValues[1].toInt()
+                val freeQty = m.groupValues[2].toInt()
+                require(buyQty > 0 && freeQty > 0) { "اشانتیون نامعتبر" }
+                value *= buyQty.toDouble() / (buyQty + freeQty).toDouble()
                 add(("اشانتیون $buyQty+$freeQty") to value)
+                continue
+            }
+
+            Regex("""cost\(([0-9]+(?:\.[0-9]+)?)\)""").matchEntire(token)?.let { m ->
+                val pct = m.groupValues[1].toDouble()
+                require(pct >= 0.0) { "هزینه جانبی نامعتبر" }
+                value *= (1.0 + pct / 100.0)
+                add(("هزینه جانبی ${trimNumber(pct)}٪") to value)
+                continue
+            }
+
+            Regex("""margin\(([0-9]+(?:\.[0-9]+)?)\)""").matchEntire(token)?.let { m ->
+                val pct = m.groupValues[1].toDouble()
+                require(pct >= 0.0 && pct < 100.0) { "حاشیه سود نامعتبر" }
+                value /= (1.0 - pct / 100.0)
+                add(("حاشیه سود ${trimNumber(pct)}٪") to value)
+                continue
+            }
+
+            Regex("""markup\(([0-9]+(?:\.[0-9]+)?)\)""").matchEntire(token)?.let { m ->
+                val pct = m.groupValues[1].toDouble()
+                require(pct >= 0.0) { "سود روی هزینه نامعتبر" }
+                value *= (1.0 + pct / 100.0)
+                add(("سود روی هزینه ${trimNumber(pct)}٪") to value)
+                continue
+            }
+
+            Regex("""round\((\d+)\)""").matchEntire(token)?.let { m ->
+                val step = m.groupValues[1].toDouble()
+                require(step > 0) { "گردکردن نامعتبر" }
+                value = ceil(value / step) * step
+                add(("گردکردن ${step.toLong()}") to value)
                 continue
             }
 
             var opText = token
             if (opText.startsWith("price")) opText = opText.removePrefix("price")
-            val m = Regex("""^([+\-*/])([0-9]+(?:\.[0-9]+)?)(%)?$""").matchEntire(opText) ?: continue
-            val op = m.groupValues[1]
-            val num = m.groupValues[2].toDouble()
-            val pct = m.groupValues[3] == "%"
-            val before = value
-            value = when (op) {
-                "+" -> if (pct) before + before * num / 100.0 else before + num
-                "-" -> if (pct) before - before * num / 100.0 else before - num
-                "*" -> if (pct) before * (num / 100.0) else before * num
-                "/" -> {
-                    val d = if (pct) num / 100.0 else num
-                    require(d != 0.0) { "تقسیم بر صفر" }
-                    before / d
+            val old = Regex("""^([+\-*/])([0-9]+(?:\.[0-9]+)?)(%)?$""").matchEntire(opText)
+            if (old != null) {
+                val op = old.groupValues[1]
+                val num = old.groupValues[2].toDouble()
+                val pct = old.groupValues[3] == "%"
+                val before = value
+                value = when (op) {
+                    "+" -> if (pct) before + before * num / 100.0 else before + num
+                    "-" -> if (pct) before - before * num / 100.0 else before - num
+                    "*" -> if (pct) before * (num / 100.0) else before * num
+                    "/" -> {
+                        val d = if (pct) num / 100.0 else num
+                        require(d != 0.0) { "تقسیم بر صفر" }
+                        before / d
+                    }
+                    else -> before
                 }
-                else -> before
+                add(("$op${trimNumber(num)}${if (pct) "%" else ""}") to value)
             }
-            add(("$op${trimNumber(num)}${if (pct) "%" else ""}") to value)
         }
-        require(isNotEmpty()) { "هیچ عملیات قابل محاسبه‌ای در فرمول پیدا نشد" }
+        require(isNotEmpty()) { "هیچ مرحله قابل محاسبه‌ای پیدا نشد" }
     }
 }
 fun applyFormula(input: Double, formula: String): Double = applyFormulaSteps(input, formula).last().second
