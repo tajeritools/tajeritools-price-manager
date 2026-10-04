@@ -325,7 +325,10 @@ fun FilesScreen(
                     ) {
                         Column(Modifier.weight(1f)) {
                             Text(d.name, style = MaterialTheme.typography.titleSmall)
-                            Text("${d.brand} • ${d.mime}", style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                "${if (d.brand == "نامشخص" || d.brand.isBlank()) "برند تشخیص داده نشد" else d.brand} • ${d.mime}",
+                                style = MaterialTheme.typography.bodySmall
+                            )
                             Text(
                                 if (d.text.isBlank()) "متن قابل استخراج پیدا نشد" else "${d.text.length} نویسه استخراج شد",
                                 style = MaterialTheme.typography.bodySmall
@@ -972,21 +975,38 @@ fun extractImageText(file: File): String {
     }
 }
 
-fun repairProductName(value: String): String {
-    val normalized = normalize(value)
+fun restoreReadableSpacing(value: String): String {
+    var s = value
+        .replace('\u00A0', ' ')
+        .replace(Regex("""[\t\r\n]+"""), " ")
         .replace(Regex("""\s+"""), " ")
         .trim()
-    val tokens = normalized.split(" ").filter { it.isNotBlank() }
-    val singleRatio = if (tokens.isEmpty()) 0.0 else tokens.count { it.length == 1 && it[0].isLetter() }.toDouble() / tokens.size
-    if (singleRatio < 0.55) return value.replace(Regex("""\s+"""), " ").trim()
 
-    val compact = tokens.joinToString("")
-    val known = listOf(
-        "دستگاهجوشکاری" to "دستگاه جوشکاری",
+    // Paddle/PDF extraction can glue Persian words to Latin model codes or numbers.
+    s = s
+        .replace(Regex("""([آ-ی])([A-Za-z0-9])"""), "$1 $2")
+        .replace(Regex("""([A-Za-z0-9])([آ-ی])"""), "$1 $2")
+        .replace(Regex("""\s*([،؛:])\s*"""), "$1 ")
+        .replace(Regex("""\s+"""), " ")
+        .trim()
+
+    val phraseRepairs = listOf(
+        "دریلپیچگوشتیشارژی" to "دریل پیچ گوشتی شارژی",
+        "دریلپیچگوشتی" to "دریل پیچ گوشتی",
+        "پیچگوشتیشارژی" to "پیچ گوشتی شارژی",
+        "پیچگوشتیبرقی" to "پیچ گوشتی برقی",
         "دریلچکشی" to "دریل چکشی",
         "دریلشارژیچکشی" to "دریل شارژی چکشی",
         "دریلشارژی" to "دریل شارژی",
-        "پیچگوشتیبرقی" to "پیچ گوشتی برقی",
+        "دستگاهجوشکاری" to "دستگاه جوشکاری",
+        "سه‌نظام" to "سه نظام",
+        "سهنظام" to "سه نظام",
+        "نیوتنمتر" to "نیوتن متر",
+        "آمپرساعت" to "آمپر ساعت",
+        "دوباتری" to "دو باتری",
+        "یکعدد" to "یک عدد",
+        "روکشدسته" to "روکش دسته",
+        "ضدلغزش" to "ضد لغزش",
         "فرزآهنگری" to "فرز آهنگری",
         "فرزسنگبری" to "فرز سنگبری",
         "مینفرز" to "مینی فرز",
@@ -998,7 +1018,7 @@ fun repairProductName(value: String): String {
         "چکشتخریب" to "چکش تخریب",
         "ارهگردبرشارژی" to "اره گردبر شارژی",
         "ارهگردبر" to "اره گردبر",
-        "ارهعمودبر" to "اره عمودبر",
+        "ارهعمودبر" to "اره عمود بر",
         "ارهزنجیریشارژی" to "اره زنجیری شارژی",
         "ارهزنجیریبنزینی" to "اره زنجیری بنزینی",
         "فارسیبر" to "فارسی بر",
@@ -1007,13 +1027,10 @@ fun repairProductName(value: String): String {
         "سشوارصنعتی" to "سشوار صنعتی",
         "پیستولهبرقی" to "پیستوله برقی",
         "بلوورشارژی" to "بلوور شارژی",
-        "بلوور" to "بلوور",
         "دمندهبرقی" to "دمنده برقی",
         "همزنبرقی" to "همزن برقی",
-        "شیارزن" to "شیارزن",
         "کارواششارژی" to "کارواش شارژی",
         "کارواشپرتابل" to "کارواش پرتابل",
-        "کارواش" to "کارواش",
         "موتوربرقبنزینی" to "موتور برق بنزینی",
         "کمپرسورباد" to "کمپرسور باد",
         "کمپرسورفندکی" to "کمپرسور فندکی",
@@ -1026,8 +1043,22 @@ fun repairProductName(value: String): String {
         "ترازلیزری" to "تراز لیزری",
         "مترلیزری" to "متر لیزری"
     )
-    val hit = known.firstOrNull { compact.contains(it.first) }
-    return hit?.second ?: compact
+    phraseRepairs.forEach { (stuck, spaced) ->
+        s = s.replace(stuck, spaced, ignoreCase = true)
+    }
+    return s.replace(Regex("""\s+"""), " ").trim()
+}
+
+fun repairProductName(value: String): String {
+    val readable = restoreReadableSpacing(value)
+    val normalized = normalize(readable)
+    val tokens = normalized.split(" ").filter { it.isNotBlank() }
+    val singleRatio = if (tokens.isEmpty()) 0.0 else tokens.count { it.length == 1 && it[0].isLetter() }.toDouble() / tokens.size
+    if (singleRatio < 0.55) return readable
+
+    // OCR may return a Persian word as one character per token. Rejoin, then re-space known phrases.
+    val compact = tokens.joinToString("")
+    return restoreReadableSpacing(compact)
 }
 
 fun isLikelyYearCode(value: String): Boolean {
@@ -1279,7 +1310,9 @@ fun detectBrand(value: String): String {
         "Nova" to listOf("nova", "نووا"),
         "Arva" to listOf("arva", "آروا"),
         "Pukka" to listOf("pukka", "پوکا"),
-        "Vivarex" to listOf("vivarex", "ویوارکس")
+        "Vivarex" to listOf("vivarex", "ویوارکس"),
+        "Hans" to listOf("hans", "هنس"),
+        "Winner" to listOf("winner", "وینر")
     )
     return brands.firstOrNull { (_, keys) -> keys.any { s.contains(normalize(it)) } }?.first.orEmpty()
 }
