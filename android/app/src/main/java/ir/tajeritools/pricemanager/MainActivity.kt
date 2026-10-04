@@ -726,6 +726,9 @@ fun extractProducts(doc: DocItem): List<ProductLine> {
     val blockRows = extractProductsFromTextBlocks(doc.brand, doc.text, doc.name)
     if (blockRows.isNotEmpty()) return blockRows
 
+    val codeFirstRows = extractProductsFromCodeFirstBlocks(doc.brand, doc.text, doc.name)
+    if (codeFirstRows.isNotEmpty()) return codeFirstRows
+
     return emptyList()
 }
 
@@ -831,6 +834,91 @@ fun extractProductsFromTextBlocks(brand: String, text: String, sourceName: Strin
     }
 
     return out.distinctBy { "${it.brand}|${it.code}|${normalize(it.name)}|${it.rawPrice}" }
+}
+
+fun parseBrokenGroupedPrice(value: String): Double? {
+    val s = normalize(value).replace("٬", "/").replace(",", "/")
+    val m = Regex("""/(\d{3})\s*/(\d{3})\s*(\d{1,3})(?!\d)""").find(s)
+    if (m != null) {
+        val high = m.groupValues[3]
+        val mid = m.groupValues[2]
+        val low = m.groupValues[1]
+        return "$high$mid$low".toDoubleOrNull()
+    }
+    return null
+}
+
+fun extractProductsFromCodeFirstBlocks(brand: String, text: String, sourceName: String): List<ProductLine> {
+    val lines = text.lines()
+        .map { normalize(it).replace(Regex("""\s+"""), " ").trim() }
+        .filter { it.isNotBlank() }
+
+    val codeOnly = Regex("""^(?:[a-z]{0,8}[-_]?)?\d{4,6}[a-z]?$""", RegexOption.IGNORE_CASE)
+    val dateRegex = Regex("""^(?:13|14|20)\d{2}[/.-]\d{1,2}[/.-]\d{1,2}$""")
+    val codeIndices = lines.indices.filter { i ->
+        val v = lines[i].replace(" ", "")
+        codeOnly.matches(v) && !isLikelyYearCode(v)
+    }
+    if (codeIndices.isEmpty()) return emptyList()
+
+    val out = mutableListOf<ProductLine>()
+    for ((idx, start) in codeIndices.withIndex()) {
+        val end = if (idx + 1 < codeIndices.size) codeIndices[idx + 1] else lines.size
+        val chunk = lines.subList(start, end).take(18)
+        val code = lines[start].replace(" ", "")
+        if (dateRegex.matches(code)) continue
+
+        var price: Double? = null
+        var priceLineIndex = -1
+        for (i in chunk.indices) {
+            val line = chunk[i]
+            val broken = parseBrokenGroupedPrice(line)
+            if (broken != null && broken >= 50_000) {
+                price = broken
+                priceLineIndex = i
+                break
+            }
+            val normalCandidates = Regex("""(?<!\w)([0-9]{1,3}(?:[٬,/][0-9]{3}){2,3}|[0-9]{6,12})(?!\w)""")
+                .findAll(line)
+                .mapNotNull { mr -> parseNumber(mr.value) }
+                .filter { v -> v >= 50_000 }
+                .toList()
+            if (normalCandidates.isNotEmpty()) {
+                price = normalCandidates.maxOrNull()
+                priceLineIndex = i
+                break
+            }
+        }
+        if (price == null) continue
+
+        val nameLines = chunk.drop(1)
+            .take(if (priceLineIndex > 0) priceLineIndex else 8)
+            .filter { line ->
+                line.any(Char::isLetter) &&
+                    !line.contains("عدد") &&
+                    !line.contains("ست") &&
+                    !line.contains("کارتن") &&
+                    !line.contains("قیمت") &&
+                    !line.contains("بروزرسانی") &&
+                    !line.contains("تصویر") &&
+                    !line.contains("کد کالا")
+            }
+
+        val name = repairProductName(nameLines.joinToString(" "))
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+
+        if (!isMeaningfulProductName(name)) continue
+
+        out += ProductLine(
+            brand = brand,
+            name = name.take(180),
+            code = code,
+            rawPrice = price,
+            source = "$sourceName • code-first"
+        )
+    }
+    return out.distinctBy { "${it.brand}|${it.code}|${it.rawPrice}" }
 }
 
 fun detectBrand(value: String): String {
