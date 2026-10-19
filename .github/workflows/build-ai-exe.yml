@@ -1,0 +1,30 @@
+name: Build Windows AI EXE
+on:
+  push:
+    branches: [feature/offline-ai-windows-exe]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: python -m pip install -r desktop/requirements.txt
+      - name: Build executable
+        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name TajeriTools-Price-Manager-AI --paths desktop desktop/ai_enabled.py
+      - name: Verify executable
+        shell: pwsh
+        run: |
+          if (!(Test-Path dist/TajeriTools-Price-Manager-AI.exe)) { throw "EXE missing" }
+          Get-Item dist/TajeriTools-Price-Manager-AI.exe | Select-Object Name,Length
+      - name: Publish downloadable EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: TajeriTools-Price-Manager-AI-Windows
+          path: dist/TajeriTools-Price-Manager-AI.exe
+          retention-days: 30
